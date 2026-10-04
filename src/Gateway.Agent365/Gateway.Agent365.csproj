@@ -6,9 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <InternalsVisibleTo Include="Gateway.ObservabilityRuntime.Tests" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Gateway.Domain\Gateway.Domain.csproj" />
@@ -23,4 +20,8 @@
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gateway.RuntimeDataPlane.Tests" />
+    <InternalsVisibleTo Include="Gateway.Purview.Consumption.Tests" />
+  </ItemGroup>
 </Project>

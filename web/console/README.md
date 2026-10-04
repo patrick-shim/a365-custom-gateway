@@ -1,5 +1,26 @@
 # A365 Gateway Console
 
+## Accepted Purview direction (2026-10-03)
+
+The [policy-consumption decision](../../docs/architecture/purview-policy-consumption.md) governs new work and supersedes
+older gateway policy-authoring and blueprint-selection plans in this document.
+Purview policy owners manage SITs/classifiers, rules, thresholds, actions, and
+modes. Gateway administrators select existing compatible policies from Purview
+and apply them to the exact individual agent identity, preserving all unrelated
+targets and exclusions. Never silently broaden an agent choice to its blueprint.
+
+Console structure: Data protection → Policies; each agent has a Data protection
+tab; Settings contains Gateway settings and Purview connection diagnostics.
+Tenant setup and first access verification belong in bootstrap. Management
+PowerShell access and runtime Graph processContent permissions are separate.
+The gateway exposes prompts:evaluate and calls Purview; Purview does not call a
+gateway processContent endpoint. Classifier/policy-rule editing stays in Purview.
+
+The catalog reads existing Purview policies. Assignment, synchronization, verified enforcement, and failures remain
+separate states. Completion requires normal allow and synthetic sensitive block
+through the gateway API plus a same-blueprint sibling isolation check. Follow the
+decision document for current implementation and evidence; plans are not proof.
+
 React + TypeScript + Fluent UI SPA on the existing **C# / .NET** Gateway REST API.
 
 This package is the **target hosted operator UI** in the product-wide UI
@@ -12,12 +33,10 @@ Product contracts: [product brief](../../docs/spec/product-brief.md).
 UI platform: [UI design](../../docs/console/design.md).  
 Runtime: [system architecture](../../docs/architecture/system-architecture.md).
 
-**Portable bootstrap deploys this Console** (Compose service `console`, default
-host port `5081`). See [portable handoff](../../docs/portable/README.md).
+**Runtime bootstrap deploys this Console** (Compose service `console`, default
+host port `5081`). See [runtime guide](../../docs/runtime/README.md).
 
-Feature parity with Blazor Admin UI is still incomplete (especially Policies).
-Blazor may remain on the **legacy Azure** profile until cutover. Setup UI
-modernization is a separate but same-stack track.
+Console and graphical bootstrap use React; both deploy through the shared runtime engine.
 
 ## Run locally against an API
 
@@ -79,8 +98,7 @@ an image-pull error; changing registry permissions does not repair its platform.
 - Registration returning HTTP 202 means accepted, not provisioned. Lost responses
   are checked by exact external ID instead of automatically replaying creation.
 - Target Console IA: registration is name → blueprint → key; Prompt Shields on
-  the agent; DLP under Data protection. Legacy Admin UI may still offer protection
-  choices during registration.
+  the agent; DLP under Data protection.
 - Registration has no environment selector. `GET /api/v1/system/config` supplies
   read-only `registrationDefaults.environment` and `reason`. Production is the
   standard contract default; the installed DirectRegistryPreview provider
@@ -130,29 +148,14 @@ an image-pull error; changing registry permissions does not repair its platform.
 - Prompt Shields uses `PATCH /agents/{id}/features`, including matching
   `If-Match` and idempotency headers/body fields. It never calls the agent
   enable/disable endpoints. Requested and effective states are distinct.
-- Purview Connection uses the existing review, explicit confirmation, start,
-  and operation-readback protocol with explicit `verificationMode: "Gateway"`.
-  It verifies both that mode and `VerifyPurviewTenantConnection` in the review;
-  an older companion-only API is a visible error, never a fallback. Confirmation
-  queues the independent verifier using the installed application, service
-  principal, Vault/OpenBao (or legacy Key Vault) certificate binding. Two exact provider reads and the
-  final check are required before Connected. No local script or pasted evidence
-  is involved, and no provider permissions are granted or changed.
-- A fresh Gateway check can replace an expired `AwaitingAdministrator` handoff
-  after review against the current row version. The existing tenant/actor binding
-  remains enforced; another actor cannot silently take over a connection.
-  Starting a check invalidates previous verified access until fresh readback.
-  Operation links survive reloads; an uncertain start is read back using the
-  reviewed operation ID, not automatically posted again. Failure details retain
-  the safe step, code and support reference without guessing the provider cause.
-- Classifiers use the actual inventory envelope and expiration metadata. Reload
-  reads the saved inventory; inventory refresh requires a successful Gateway
-  provider verification.
-- Policies is currently **read-only**. Policy editing, behavior tests, and
-  runtime enforcement management are not yet implemented in the React Console.
-  That gap blocks Blazor Settings retirement.
-- Platform reports API health, actual capabilities, and persisted Prompt Shields
-  defaults. API health is not worker health; installation is not enforcement.
+- Purview management access is provisioned and verified during bootstrap using a
+  dedicated certificate identity. Settings shows ongoing connection diagnostics.
+- Classifiers and policy definitions remain owned in Purview.
+- Policies reads the signed tenant catalog. Each agent's Data protection tab
+  reviews and confirms existing-policy assignment to its individual identity,
+  separately displaying synchronization and observed allow/block results.
+- Settings reports API health and persisted defaults. Bootstrap also verifies
+  that the worker is running and consuming its provisioning queue.
 - Agent setup failures retain the API's provisioning step and failure detail.
   The provider's `PROVISIONING_PREVIEW_DISABLED` guard is unchanged. Feature edits
   are available only in the API-supported Active and Disabled lifecycle states.
@@ -169,30 +172,18 @@ required delegated scopes for an administrator; sign-in alone is not admin
 consent. No mutation is automatically replayed after sign-in. Claims recovery
 context stays in memory; token storage remains owned by the existing MSAL cache.
 
-## API and worker cutover
+## Deployment validation
 
-Deploy the matching API and provisioning worker before enabling this Console's
-new workflows. Retire old API/worker replicas before accepting new Gateway-mode
-operations: old binaries do not understand the new persisted operation type.
-The queue name, workflow version, step/attempt bindings, and database schema are
-unchanged. `VerifyPurviewTenantConnection` is a new string enum value, and the
-existing bounded `AuthorityKind` temporarily binds pending verification to its
-operation ID. No migration, executor script/package change, role grant, or
-bootstrap/maintenance-state mutation is required by this source change.
+Build and deploy the API, worker and Console from the reviewed runtime source.
+Bootstrap requires API/readiness/Console/proxy success and an active worker queue
+consumer. Validate Registry completion, catalog readback, exact per-agent scope,
+normal allow/sensitive block and an unassigned sibling independently. Isolated
+provider tests do not prove tenant access or downstream delivery.
 
-Old clients omitting `verificationMode` retain the companion review/start/complete
-flow and its original payload/idempotency hashes. New Gateway reviews have a
-separate mode-bound hash and cannot be confirmed or replayed as companion mode
-(or vice versa). Both paths retain consumed confirmations, tenant/actor checks,
-row versions, audits and exact provider verification.
+## Source hygiene
 
-Tests with isolated providers establish workflow behavior, not live Purview
-access or Registry consent. The deployment owner must independently verify the
-installed provider, delegated authorization and final readback. A generic
-`PURVIEW_CONNECTION_PROVIDER_UNVERIFIED` code is not a diagnosis and never
-justifies recreating a provider reference or widening permissions.
-
-The Blazor Admin UI remains bootstrap-deployed until Console parity and install
-cutover. A successful build or smoke test is not human acceptance of the full
-product. Guided Setup UI modernization uses this same React + Fluent stack over
-the existing PowerShell bootstrap engine; it is tracked separately from this package.
+`npm run check:reachability` follows imports from the runtime and test entry points
+and rejects orphan TS/TSX files or missing local imports. It runs during image
+builds. The retired Classifiers page and its API helper/schema have been removed;
+its old URL keeps a redirect to Policies. Shared display helpers live in
+`src/api/display.ts`, not in another page component.

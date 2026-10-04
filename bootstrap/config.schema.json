@@ -8,23 +8,27 @@
     "tenantId",
     "environment",
     "projectName",
-    "alertEmail",
-    "capabilityPreset",
     "agent365",
     "promptShield",
-    "purview"
+    "purview",
+    "deployProfile",
+    "runtime"
   ],
   "properties": {
-    "$schema": { "type": "string" },
-    "deployProfile": {
-      "enum": ["portable", "azureLegacy"],
-      "default": "azureLegacy",
-      "description": "portable = Docker Compose host + Entra/product Azure resources only. azureLegacy = full Azure PaaS profile."
+    "$schema": {
+      "type": "string"
     },
-    "portable": {
+    "deployProfile": {
+      "const": "runtime",
+      "description": "Runtime gateway deployment. Legacy Azure hosting is retired."
+    },
+    "runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["apiHostPort", "consoleHostPort"],
+      "required": [
+        "apiHostPort",
+        "consoleHostPort"
+      ],
       "properties": {
         "apiHostPort": {
           "type": "integer",
@@ -37,84 +41,76 @@
           "minimum": 1,
           "maximum": 65535,
           "default": 5081,
-          "description": "Host port for the React Fluent Console (primary portable UI)."
+          "description": "Host port for the React Fluent Console (primary runtime UI)."
         },
-        "adminUiHostPort": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "default": 5082,
-          "description": "Deprecated legacy Blazor Admin UI port; not deployed by portable bootstrap."
+        "composeProjectName": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$",
+          "description": "Stable Docker Compose project name. Keep this unchanged for an existing deployment.",
+          "type": "string"
+        },
+        "credentialLabelPrefix": {
+          "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+          "description": "Stable label prefix for the three bootstrap credentials. Keep this unchanged for an existing deployment.",
+          "type": "string"
         }
       }
     },
     "subscriptionId": {
       "type": "string",
       "format": "uuid",
-      "not": { "const": "00000000-0000-0000-0000-000000000000" }
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
     },
     "tenantId": {
       "type": "string",
       "format": "uuid",
-      "not": { "const": "00000000-0000-0000-0000-000000000000" }
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
     },
-    "environment": { "enum": ["dev", "staging", "prod"] },
-    "location": { "type": "string", "pattern": "^[a-z0-9]+$" },
-    "projectName": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,7}$" },
+    "environment": {
+      "enum": [
+        "dev",
+        "staging",
+        "prod"
+      ]
+    },
+    "location": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+$"
+    },
+    "projectName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{1,7}$"
+    },
     "resourceGroupName": {
       "type": "string",
       "minLength": 1,
       "maxLength": 90,
       "pattern": "^(?=.{1,90}$)[A-Za-z0-9._()\\-]*[A-Za-z0-9_()\\-]$"
     },
-    "alertEmail": { "type": "string", "format": "email" },
-    "capabilityPreset": {
-      "enum": ["fullEvaluation", "coreGateway", "custom"],
-      "description": "Every new gateway preset includes shared Prompt Shields. Purview prerequisites remain independently selected."
-    },
-    "sql": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["skuName", "skuTier"],
-      "properties": {
-        "skuName": { "enum": ["Basic", "S0", "S1", "S2", "S3", "P1", "P2", "GP_S_Gen5_1", "GP_S_Gen5_2"] },
-        "skuTier": { "enum": ["Basic", "Standard", "Premium", "GeneralPurpose"] }
-      },
-      "oneOf": [
-        {
-          "properties": {
-            "skuName": { "const": "Basic" },
-            "skuTier": { "const": "Basic" }
-          }
-        },
-        {
-          "properties": {
-            "skuName": { "enum": ["S0", "S1", "S2", "S3"] },
-            "skuTier": { "const": "Standard" }
-          }
-        },
-        {
-          "properties": {
-            "skuName": { "enum": ["P1", "P2"] },
-            "skuTier": { "const": "Premium" }
-          }
-        },
-        {
-          "properties": {
-            "skuName": { "enum": ["GP_S_Gen5_1", "GP_S_Gen5_2"] },
-            "skuTier": { "const": "GeneralPurpose" }
-          }
-        }
-      ]
-    },
     "agent365": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seedBlueprintName", "allowDevelopmentRegistryPreview", "registryBetaAcknowledged", "reviewedManagerApplicationIds"],
+      "required": [
+        "seedBlueprintName",
+        "allowDevelopmentRegistryPreview",
+        "registryBetaAcknowledged",
+        "reviewedManagerApplicationIds"
+      ],
       "properties": {
-        "seedBlueprintName": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "allowDevelopmentRegistryPreview": { "type": "boolean" },
-        "registryBetaAcknowledged": { "type": "boolean" },
+        "seedBlueprintName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "allowDevelopmentRegistryPreview": {
+          "type": "boolean"
+        },
+        "registryBetaAcknowledged": {
+          "type": "boolean"
+        },
         "reviewedManagerApplicationIds": {
           "type": "array",
           "description": "Independently reviewed Microsoft first-party application IDs, unique by GUID identity regardless of letter casing.",
@@ -125,287 +121,200 @@
           "items": {
             "type": "string",
             "pattern": "^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
-            "not": { "const": "00000000-0000-0000-0000-000000000000" }
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
           }
         }
       }
     },
     "promptShield": {
       "type": "object",
-      "description": "Shared Azure AI Content Safety infrastructure, included for every new gateway. Agent-level usage is selected separately at registration or edit; disabled legacy configurations remain supported for source-bound recovery.",
+      "description": "Azure AI Content Safety for Prompt Shields. Explicitly selected during setup; per-agent usage is configured later.",
       "additionalProperties": false,
-      "required": ["enabled", "skuName", "costAndQuotaAcknowledged"],
+      "required": [
+        "enabled",
+        "skuName",
+        "costAndQuotaAcknowledged"
+      ],
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "skuName": { "enum": ["F0", "S0"] },
-        "costAndQuotaAcknowledged": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "skuName": {
+          "enum": [
+            "F0",
+            "S0"
+          ]
+        },
+        "costAndQuotaAcknowledged": {
+          "type": "boolean"
+        }
       }
     },
     "purview": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "authorityRequirementsAcknowledged"],
+      "required": [
+        "enabled",
+        "authorityRequirementsAcknowledged"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "authorityRequirementsAcknowledged": { "type": "boolean" },
-        "collectionPolicyName": { "type": "string", "minLength": 1, "deprecated": true },
-        "dlpPolicyName": { "type": "string", "minLength": 1, "deprecated": true },
-        "dlpRuleName": { "type": "string", "minLength": 1, "deprecated": true },
-        "sensitiveInformationTypeId": {
-          "type": "string",
-          "pattern": "^(?:|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$",
-          "deprecated": true
+        "enabled": {
+          "type": "boolean"
         },
-        "sensitiveInformationType": { "type": "string", "maxLength": 255, "deprecated": true },
-        "activateGatewayAdapterAfterPolicyReadback": {
-          "type": "boolean",
-          "const": false,
-          "deprecated": true,
-          "description": "Legacy compatibility input. Only false is accepted; the loader discards it without activating an adapter."
-        },
-        "policyProvisioningEnabled": { "type": "boolean", "deprecated": true },
-        "policyProvisioningOrganization": { "type": "string", "deprecated": true },
-        "policyProvisioningApplicationId": { "type": "string", "deprecated": true },
-        "policyProvisioningCertificateSecretUri": { "type": "string", "deprecated": true }
+        "authorityRequirementsAcknowledged": {
+          "type": "boolean"
+        }
       }
     }
   },
   "allOf": [
     {
       "if": {
-        "anyOf": [
-          {
-            "properties": { "deployProfile": { "const": "azureLegacy" } },
-            "required": ["deployProfile"]
-          },
-          {
-            "not": { "required": ["deployProfile"] }
+        "properties": {
+          "deployProfile": {
+            "const": "runtime"
           }
+        },
+        "required": [
+          "deployProfile"
+        ]
+      },
+      "then": {
+        "required": [
+          "runtime"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "deployProfile": {
+            "const": "runtime"
+          },
+          "promptShield": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "deployProfile",
+          "promptShield"
         ]
       },
       "then": {
         "required": [
           "subscriptionId",
           "location",
-          "resourceGroupName",
-          "sql"
+          "resourceGroupName"
         ]
       }
     },
     {
       "if": {
-        "properties": { "deployProfile": { "const": "portable" } },
-        "required": ["deployProfile"]
-      },
-      "then": {
-        "required": ["portable"]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "deployProfile": { "const": "portable" },
-          "promptShield": {
-            "properties": { "enabled": { "const": true } },
-            "required": ["enabled"]
-          }
-        },
-        "required": ["deployProfile", "promptShield"]
-      },
-      "then": {
-        "required": ["subscriptionId", "location", "resourceGroupName"]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "capabilityPreset": { "const": "fullEvaluation" }
-        },
-        "required": ["capabilityPreset"]
-      },
-      "then": {
-        "properties": {
-          "environment": { "const": "dev" },
-          "agent365": {
-            "properties": {
-              "allowDevelopmentRegistryPreview": { "const": true }
-            }
-          },
-          "promptShield": {
-            "properties": {
-              "enabled": { "const": true }
-            }
-          },
-          "purview": {
-            "properties": {
-              "enabled": { "const": true }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "capabilityPreset": { "const": "coreGateway" }
-        },
-        "required": ["capabilityPreset"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "enabled": { "const": false }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
         "properties": {
           "agent365": {
             "properties": {
-              "allowDevelopmentRegistryPreview": { "const": true }
-            },
-            "required": ["allowDevelopmentRegistryPreview"]
-          }
-        },
-        "required": ["agent365"]
-      },
-      "then": {
-        "properties": {
-          "environment": { "const": "dev" },
-          "agent365": {
-            "properties": {
-              "registryBetaAcknowledged": { "const": true }
-            },
-            "required": ["registryBetaAcknowledged"]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "promptShield": {
-            "properties": {
-              "enabled": { "const": true }
-            },
-            "required": ["enabled"]
-          }
-        },
-        "required": ["promptShield"]
-      },
-      "then": {
-        "properties": {
-          "promptShield": {
-            "properties": {
-              "costAndQuotaAcknowledged": { "const": true }
-            },
-            "required": ["costAndQuotaAcknowledged"]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "enabled": { "const": true }
-            },
-            "required": ["enabled"]
-          }
-        },
-        "required": ["purview"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "authorityRequirementsAcknowledged": { "const": true }
-            },
-            "required": ["authorityRequirementsAcknowledged"]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "sensitiveInformationType": { "minLength": 1 }
-            },
-            "required": ["sensitiveInformationType"]
-          }
-        },
-        "required": ["purview"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "sensitiveInformationTypeId": {
-                "pattern": "^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
-              }
-            },
-            "required": ["sensitiveInformationTypeId"]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "purview": {
-            "required": ["sensitiveInformationTypeId"]
-          }
-        },
-        "required": ["purview"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "required": ["sensitiveInformationType"]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "policyProvisioningEnabled": { "const": true }
-            },
-            "required": ["policyProvisioningEnabled"]
-          }
-        },
-        "required": ["purview"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "enabled": { "const": true },
-              "policyProvisioningOrganization": {
-                "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\\.[A-Za-z]{2,}$"
-              },
-              "policyProvisioningApplicationId": {
-                "format": "uuid",
-                "not": { "const": "00000000-0000-0000-0000-000000000000" }
-              },
-              "policyProvisioningCertificateSecretUri": {
-                "pattern": "^https://[A-Za-z0-9-]+\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]{1,127}$"
+              "allowDevelopmentRegistryPreview": {
+                "const": true
               }
             },
             "required": [
-              "enabled",
-              "policyProvisioningOrganization",
-              "policyProvisioningApplicationId",
-              "policyProvisioningCertificateSecretUri"
+              "allowDevelopmentRegistryPreview"
+            ]
+          }
+        },
+        "required": [
+          "agent365"
+        ]
+      },
+      "then": {
+        "properties": {
+          "environment": {
+            "const": "dev"
+          },
+          "agent365": {
+            "properties": {
+              "registryBetaAcknowledged": {
+                "const": true
+              }
+            },
+            "required": [
+              "registryBetaAcknowledged"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "promptShield": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "promptShield"
+        ]
+      },
+      "then": {
+        "properties": {
+          "promptShield": {
+            "properties": {
+              "costAndQuotaAcknowledged": {
+                "const": true
+              }
+            },
+            "required": [
+              "costAndQuotaAcknowledged"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "purview": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "purview"
+        ]
+      },
+      "then": {
+        "properties": {
+          "purview": {
+            "properties": {
+              "authorityRequirementsAcknowledged": {
+                "const": true
+              }
+            },
+            "required": [
+              "authorityRequirementsAcknowledged"
             ]
           }
         }

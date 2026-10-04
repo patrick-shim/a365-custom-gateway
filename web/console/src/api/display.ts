@@ -1,5 +1,9 @@
 import type { Agent, Blueprint } from "./types";
 
+export function evaluationLabel(enabled: boolean | null | undefined) {
+  return enabled === true ? "Enabled · verification needed" : enabled === false ? "Not enabled" : "Not reported";
+}
+
 export function utcTime(value: string): number {
   return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`);
 }

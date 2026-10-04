@@ -11,7 +11,7 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
     {
         builder.ToTable("AgentRegistrations", table => table.HasCheckConstraint(
             "CK_AgentRegistrations_ProtectionRevision",
-            "[ProtectionRevision] <> '00000000-0000-0000-0000-000000000000'"));
+            "\"ProtectionRevision\" <> '00000000-0000-0000-0000-000000000000'"));
 
         builder.HasKey(e => e.Id);
 
@@ -33,7 +33,7 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
         builder.Property(e => e.BlueprintObjectId).HasMaxLength(64);
         builder.Property(e => e.BlueprintSelectionMode)
             .HasMaxLength(32)
-            .HasDefaultValue("Legacy")
+            .HasDefaultValue("UseExisting")
             .IsRequired();
         builder.Property(e => e.RequestedBlueprintObjectId).HasMaxLength(64);
         builder.Property(e => e.RequestedBlueprintDisplayName).HasMaxLength(256);
@@ -41,26 +41,24 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .HasMaxLength(32)
             .HasDefaultValue("NotRequested")
             .IsRequired();
-        builder.Property(e => e.RequestedPurviewPolicyDisplayName).HasMaxLength(200);
-        builder.Property(e => e.RequestedPurviewPolicyTemplate).HasMaxLength(64);
         builder.Property(e => e.RequestedPurviewPolicyMode).HasConversion<string>().HasMaxLength(32);
         builder.Property(e => e.LastProvisioningErrorCode).HasMaxLength(64);
         builder.Property(e => e.LastProvisioningErrorSummary).HasMaxLength(2000);
         builder.Property(e => e.IsDeleted).HasDefaultValue(false);
         builder.Property(e => e.RowVersion).IsRowVersion();
-        builder.Property(e => e.ProtectionRevision).HasDefaultValueSql("(NEWID())").IsRequired();
+        builder.Property(e => e.ProtectionRevision).HasDefaultValueSql("gen_random_uuid()").IsRequired();
 
         builder.HasIndex(e => e.ExternalAgentId)
             .IsUnique()
-            .HasFilter("[IsDeleted] = 0");
+            .HasFilter("\"IsDeleted\" = FALSE");
 
         builder.HasIndex(e => e.ExternalClientId)
             .IsUnique()
-            .HasFilter("[ExternalClientId] IS NOT NULL AND [IsDeleted] = 0");
+            .HasFilter("\"ExternalClientId\" IS NOT NULL AND \"IsDeleted\" = FALSE");
 
         builder.HasIndex(e => e.AgentIdentityObjectId)
             .IsUnique()
-            .HasFilter("[AgentIdentityObjectId] IS NOT NULL AND [IsDeleted] = 0");
+            .HasFilter("\"AgentIdentityObjectId\" IS NOT NULL AND \"IsDeleted\" = FALSE");
 
         builder.HasIndex(e => e.Status);
         builder.HasIndex(e => new { e.Environment, e.Status });
@@ -76,16 +74,6 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .WithOne(e => e.AgentRegistration)
             .HasForeignKey(e => e.AgentRegistrationId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(e => e.CredentialReference)
-            .WithOne(e => e.AgentRegistration)
-            .HasForeignKey<AgentCredentialReference>(e => e.AgentRegistrationId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(e => e.PurviewPolicyProfile)
-            .WithMany(e => e.AgentRegistrations)
-            .HasForeignKey(e => e.PurviewPolicyProfileId)
-            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasQueryFilter(e => !e.IsDeleted);
     }

@@ -163,6 +163,17 @@ internal sealed class MicrosoftGraphProvisioningClient
             cancellationToken);
     }
 
+    public Task<GraphApplication> GetBlueprintCredentialsAsync(Guid blueprintObjectId, CancellationToken cancellationToken) =>
+        SendRequiredJsonAsync<GraphApplication>(HttpMethod.Get,
+            $"v1.0/applications/{blueprintObjectId:D}/microsoft.graph.agentIdentityBlueprint?$select=id,appId,passwordCredentials",
+            null, false, cancellationToken);
+
+    public Task<GraphPasswordCredential> AddBlueprintPasswordAsync(Guid blueprintObjectId, string name, CancellationToken cancellationToken) =>
+        SendRequiredJsonAsync<GraphPasswordCredential>(HttpMethod.Post,
+            $"v1.0/applications/{blueprintObjectId:D}/addPassword",
+            new { passwordCredential = new { displayName = name, endDateTime = DateTimeOffset.UtcNow.AddYears(1) } },
+            true, cancellationToken);
+
     public Task<GraphApplication> CreateBlueprintAsync(
         string displayName,
         string? description,
@@ -818,6 +829,15 @@ internal sealed record GraphApplication
     public string? DisplayName { get; init; }
     public List<string>? Tags { get; init; }
     public List<Guid>? ManagerApplications { get; init; }
+    public List<GraphPasswordCredential>? PasswordCredentials { get; init; }
+}
+
+internal sealed record GraphPasswordCredential
+{
+    public Guid KeyId { get; init; }
+    public string? DisplayName { get; init; }
+    public string? SecretText { get; init; }
+    public DateTimeOffset EndDateTime { get; init; }
 }
 
 internal sealed record GraphServicePrincipal

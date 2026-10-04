@@ -1,13 +1,14 @@
 using System.Net;
 using Gateway.Setup;
-using Gateway.Setup.Components;
+using Microsoft.AspNetCore.Antiforgery;
+using System.Text.Json;
 using Gateway.Setup.Security;
 using Gateway.Setup.Services;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using Microsoft.FluentUI.AspNetCore.Components;
+using Microsoft.Extensions.FileProviders;
 
 SetupHostArguments hostArguments;
 try
@@ -45,7 +46,7 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-builder.WebHost.UseStaticWebAssets();
+
 
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.AspNetCore.Session", LogLevel.Error);
@@ -71,15 +72,16 @@ builder.Services.AddSession(options =>
 });
 builder.Services.AddAntiforgery(options =>
 {
+    options.HeaderName = "X-Setup-Csrf";
     options.Cookie.Name = $"a365_gateway_setup_antiforgery_{cookieSuffix}";
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Strict;
     options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
 });
 
-builder.Services.AddRazorComponents().AddInteractiveServerComponents();
-builder.Services.AddFluentUIComponents();
-builder.Services.AddSetupWorkflow();
+
+
+builder.Services.AddSingleton<SetupEngine>();
 
 var app = builder.Build();
 
@@ -87,10 +89,25 @@ app.UseSession();
 app.UseMiddleware<SetupBoundaryMiddleware>();
 app.UseAntiforgery();
 
-app.MapStaticAssets();
-app.MapGet("/", () => Results.Redirect("/setup/welcome", permanent: false));
-app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
-
+var assets = Path.Combine(repository.RootPath, "web", "setup", "dist");
+if (!File.Exists(Path.Combine(assets,"index.html")))
+    throw new InvalidOperationException("Build the React installer first with gateway gui.");
+app.UseStaticFiles(new StaticFileOptions { FileProvider=new PhysicalFileProvider(assets) });
+app.MapGet("/api/setup/session", (HttpContext context, IAntiforgery csrf) =>
+    Results.Ok(new {token=csrf.GetAndStoreTokens(context).RequestToken}));
+app.MapGet("/api/setup/progress", (SetupEngine engine) => Results.Ok(engine.Snapshot()));
+app.MapPost("/api/setup/operations", async (HttpContext context, IAntiforgery csrf, SetupEngine engine) => {
+    try { await csrf.ValidateRequestAsync(context); }
+    catch(AntiforgeryValidationException) { return Results.BadRequest(new {message="Setup session expired. Reopen setup."}); }
+    if(context.Request.ContentLength is null or > 32768) return Results.BadRequest(new {message="Invalid setup request size."});
+    SetupRequest? request;
+    try { request=await JsonSerializer.DeserializeAsync<SetupRequest>(context.Request.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web), context.RequestAborted); }
+    catch(JsonException) { return Results.BadRequest(new {message="Invalid setup request."}); }
+    if(request is null) return Results.BadRequest();
+    try { return engine.Start(request.Action,request.Input,request.Fingerprint) ? Results.Accepted() : Results.Conflict(new {message="Setup is already running."}); }
+    catch(ArgumentException exception) { return Results.BadRequest(new {message=exception.Message}); }
+});
+app.MapFallback(() => Results.File(Path.Combine(assets,"index.html"),"text/html"));
 await app.StartAsync();
 
 var addresses = app.Services
@@ -128,3 +145,5 @@ await app.WaitForShutdownAsync();
 return 0;
 
 public partial class Program;
+
+public sealed record SetupRequest(string Action, JsonElement? Input, string? Fingerprint);

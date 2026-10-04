@@ -13,9 +13,7 @@ public record UpdateFeaturesCommand(
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
     bool? PromptShieldEnabled = null,
-    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
     Guid? IdempotencyKey = null,
     string? ExpectedRowVersion = null,
-    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null,
     Guid? CallerTenantId = null)
     : IRequest<UpdateFeaturesResponse>;

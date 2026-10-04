@@ -1,7 +1,28 @@
 # A365 Custom Gateway architecture
 
+## Purview responsibilities
+
+The [policy-consumption decision](purview-policy-consumption.md) describes catalog and assignment behavior.
+Purview policy owners manage SITs/classifiers, rules, thresholds, actions, and
+modes. Gateway administrators select existing compatible policies from Purview
+and apply them to the exact individual agent identity, preserving all unrelated
+targets and exclusions. Never silently broaden an agent choice to its blueprint.
+
+Console structure: Data protection → Policies; each agent has a Data protection
+tab; Settings contains Gateway settings and Purview connection diagnostics.
+Tenant setup and first access verification belong in bootstrap. Management
+PowerShell access and runtime Graph processContent permissions are separate.
+The gateway exposes prompts:evaluate and calls Purview; Purview does not call a
+gateway processContent endpoint. Classifier/policy-rule editing stays in Purview.
+
+Policies come from the existing Purview catalog and assignments target individual
+agent identities. Assignment, synchronization, verified enforcement, and failures remain
+separate states. Completion requires normal allow and synthetic sensitive block
+through the gateway API plus a same-blueprint sibling isolation check. Follow the
+decision document for current implementation and evidence; plans are not proof.
+
 How the system is built. For **why** it exists, scope, UI platform, and
-**portable runtime** requirements, see the [product brief](../spec/product-brief.md).
+**runtime** requirements, see the [product brief](../spec/product-brief.md).
 
 ## Objective (architecture view)
 
@@ -19,22 +40,20 @@ ingress credentials, evaluate/ingest receipts, durable provisioning, and
 Purview / Prompt Shields administration.
 
 **Product logic stays intact.** The **running environment** has **zero Microsoft
-infrastructure dependence** — same containers on AWS, GCP, or on-prem must work
+infrastructure dependence** — application containers use standard runtime interfaces
 without Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob.
 
-This guide describes the **target** architecture and notes where the legacy Azure
-infra profile still exists in source.
+This guide describes the Docker Compose runtime.
 
 ## Infrastructure (zero Microsoft dependence)
 
 | Concern | Target technology | Role |
 |---|---|---|
 | Relational state | **PostgreSQL** | Authoritative Gateway state (EF Core) |
-| Local/dev DB option | **SQLite** | Single-node developer convenience only |
-| Messaging | **RabbitMQ** | Registration + protection work queues after transactional outbox |
+| Messaging | **RabbitMQ** | Provisioning and activity work after transactional outbox |
 | Secrets | **OpenBao** / **HashiCorp Vault** | Certificates, connection material, non-Entra secrets |
 | Content store | **S3-compatible** (MinIO or cloud S3/GCS/Blob-via-S3) | Protected interaction content |
-| Compute | **Docker Compose** and/or **Kubernetes** | API, worker, Console, optional Purview executor |
+| Compute | **Docker Compose** | API, worker and Console; local Windows Purview catalog host |
 | Images | Any **OCI** registry | Immutable digests |
 | Telemetry mirror | **OpenTelemetry** | Optional sanitized monitoring export |
 | Ingress | Standard TLS reverse proxy / cloud LB | HTTPS termination; trusted proxy CIDRs |
@@ -46,35 +65,25 @@ infra profile still exists in source.
 | Entra ID / MSAL | Operator sign-in and API authorization |
 | Microsoft Graph + Agent 365 Registry | Identity blueprints, child Agent IDs, Registry |
 | Agent 365 observability | Default sanitized activity export |
-| Purview + Windows executor | Microsoft 365 DLP/KYD and runtime evidence |
+| Purview + runtime catalog host | Microsoft 365 DLP/KYD and runtime evidence |
 | Prompt Shields | Pre-model prompt-attack evaluation |
 
 These are SaaS/API dependencies for the product's purpose. They do **not** put
 the Gateway's database, bus, secrets, or compute on Microsoft infrastructure.
 
-### Legacy Azure infrastructure profile (transitional)
-
-Existing Bicep/bootstrap assets may still provision Azure SQL, Service Bus, Key
-Vault, Container Apps, ACR, and Blob. That is **legacy infrastructure only** —
-not the product end state. Target: Compose/Kubernetes with zero Microsoft infra.
-See [infrastructure](../../infrastructure/README.md) and
-[bootstrap](../../bootstrap/README.md).
-
 ## System context
 
 ```mermaid
 flowchart LR
-    Operator[Administrator] -->|Entra sign-in| Ui[Hosted UI Console target]
-    Deployer[Deployer] --> Setup[Setup UI React Fluent target]
-    Setup --> Bootstrap[Bootstrap engine portable profiles]
+    Operator[Administrator] -->|Entra sign-in| Ui[React Console]
+    Deployer[Deployer] --> Setup[React Setup]
+    Setup --> Bootstrap[Bootstrap engine runtime profiles]
     Ui -->|delegated access_as_user| Api[Gateway API C#]
     External[External agent] -->|external ID and Gateway key| Api
     Api --> Db[(PostgreSQL)]
     Db --> Relay[Transactional outbox relay]
     Relay --> RegistrationQueue[RabbitMQ registration queue]
-    Relay --> ProtectionQueue[RabbitMQ protection queue]
     RegistrationQueue --> Worker[Provisioning worker C#]
-    ProtectionQueue --> Worker
     Worker --> Db
     Api --> Vault[OpenBao / Vault]
     Worker --> Vault
@@ -83,8 +92,9 @@ flowchart LR
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
     Api --> Shield[Prompt Shields Microsoft content safety]
     Api --> Purview[Purview Graph runtime APIs]
-    Worker -->|private transport| Executor[Windows Purview executor]
-    Executor -->|certificate from Vault| Compliance[Security and Compliance PowerShell]
+    Api -->|authenticated assignment files| Catalog[Windows Purview catalog host]
+    Catalog -->|signed catalog and assignment readback| Api
+    Catalog -->|Windows certificate store| Compliance[Security and Compliance PowerShell]
 ```
 
 ## Identity and authority
@@ -97,12 +107,12 @@ the Gateway key and external ID; they do not choose a cloud managed identity.
 |---|---|
 | Administrator in hosted UI | Entra OpenID Connect; API enforces delegated scope, tenant, user, role |
 | API to Registry | User-only on-behalf-of token with reviewed Registry scopes |
-| Worker to Graph | Workload credential (Vault/K8s/cloud WI) with reviewed application-role allowlist |
+| Worker to Graph | Bootstrap-provisioned application credential with reviewed role allowlist |
 | External agent | Gateway credential bound to one registration |
 | API to Prompt Shields | Workload credential to the configured provider |
-| Purview runtime | Prepared workload credential and exact runtime binding |
-| Worker to Windows executor | Dedicated application role and exact caller binding |
-| Windows executor to compliance | Certificate resolved from Vault/OpenBao (not Azure Key Vault as a requirement) |
+| Purview runtime | Individual agent token obtained through its own blueprint credential |
+| API to catalog host | Authenticated files bound to tenant, agent, policy and review |
+| Catalog host to compliance | Dedicated certificate in the bootstrap account Windows certificate store |
 
 Gateway keys are ingress credentials. Clear value returned once; storage keeps a
 salted verifier. UI role visibility never replaces API authorization.
@@ -112,30 +122,19 @@ networks (`GatewayIngress:TrustedProxyNetworks`), before authentication. Empty
 lists trust no forwarded scheme; direct HTTPS remains supported. See the
 [HTTPS ingress contract](../api/api-contract.md#https-ingress).
 
-### UI clients (current vs target)
+### UI clients
 
-| Client | Role |
-|---|---|
-| **React Console** | **Portable default** hosted operator UI (`web/console` on Compose `:5081`) |
-| **Blazor Admin UI** | Legacy hosted UI still present on the Azure profile only |
-| **Guided Setup** | Legacy Setup app → React + Fluent over portable bootstrap |
-
-See [UI design](../console/design.md).
-
-### Legacy Admin UI behavior (still in source)
-
-Blazor InteractiveServer details, Getting started, circuit-only key acknowledgement,
-and `pendingExternalId` recovery URL behavior remain documented for the legacy UI
-until Console cutover. Target Console IA: registration name → blueprint → key;
-Prompt Shields on the agent; DLP under Data protection.
+React Console is the deployed administrator UI. React Setup and the terminal
+installer use the same runtime bootstrap engine. Both setup interfaces share the same engine.
 
 ## Deployment and lifecycle
 
-Bootstrap implements Plan, Apply, Resume, and Verify against the **selected
-deploy profile** (portable Compose/Kubernetes target; Azure PaaS profile
-transitional). Prompt Shields and Purview remain independently selectable.
-Setup prepares capabilities; tenant policy configuration belongs to the
-authenticated application.
+Bootstrap implements Plan, Apply/Up, and Verify for runtime Docker Compose.
+The React installer and terminal share one configuration and execution engine.
+Known interrupted checkpoints are reconciled through exact ownership readback;
+Prompt Shields and Purview remain
+independently selectable. Initial connection settings and product provisioning
+belong in bootstrap; existing-policy selection belongs in the Console.
 
 Registration and protection remain separate lifecycles:
 
@@ -158,18 +157,16 @@ admission stay closed.
 Bootstrap and maintenance authorize different lifecycles. Neither may adopt a
 deliberately deleted environment by editing checkpoint fields.
 
-## Registration and shared protection
+## Registration and individual-agent protection
 
-Registration may carry explicitly reviewed Purview configuration. For a new
-blueprint, policy work waits in **AwaitingBlueprint** until Active, then continues
-with original consent checks. Know Your Data uses the fixed tenant-wide Group
-`ee1680d0-702f-4090-b26c-c49091e86531`. DLP uses the blueprint application as an
-Individual location. Configuration, simulation, disabled state, and verified
-enforcement remain distinct. See [protection guide](protection-settings-plan.md).
+Registration creates the agent identity and Registry entry. Administrators select
+existing Purview policies separately on the agent's Data protection tab. Assignment
+targets the individual agent identity, never its blueprint. Policy definitions and
+classifiers are authored in Purview. Initial connection setup belongs in bootstrap;
+ongoing diagnostics belong in Settings.
 
-Legacy Admin UI Settings task flows and companion paste paths remain transitional
-UI detail; Console Data protection is the long-term home. Protection mutations
-still use review → confirm → start with HTTP 202 and exact readback recovery.
+Only individual policy assignments are stored. Assignment, synchronization and verified
+enforcement remain distinct. See the [protection guide](protection-configuration.md).
 
 ## Data plane and prompt receipts
 
@@ -184,28 +181,23 @@ enforcement; offline processing cannot establish response-side blocking.
 
 ## Durability and operational boundaries
 
-**PostgreSQL** (target) owns Gateway state. State transitions and dispatch records
+**PostgreSQL** owns Gateway state. State transitions and dispatch records
 use a transactional outbox. Logical queues remain:
 
 - registration: `gateway-provisioning-v3`
-- protection administration: `gateway-protection-admin-v1`
 
-Transport target is **RabbitMQ**; consumers stay duplicate-safe and recover
-uncertain provider outcomes by exact readback. Legacy Azure Service Bus bindings
-are profile-specific, not the product end state.
+Transport is **RabbitMQ**; consumers stay duplicate-safe and recover
+uncertain provider outcomes by exact readback.
 
 Approved runtime sample tests keep ephemeral raw samples; durable operations keep
 consent hashes and sanitized outcomes.
 
 Telemetry has a narrower delivery guarantee than the outbox. An OpenTelemetry
-mirror (target) or legacy Azure Monitor mirror may record a durable attempt marker
+mirror (target) or optional Azure Monitor mirror may record a durable attempt marker
 before emission; a local span is not remote delivery proof. Agent 365 acceptance
 does not establish every Microsoft 365 / DSPM / XDR destination.
 
-Upgrade/maintenance for the legacy Azure profile is documented in
-[gateway-upgrade.md](../../operations/gateway-upgrade.md). Portable-profile
-maintenance follows Compose/Kubernetes image+schema contracts without Azure
-What-If as a requirement.
+Runtime maintenance uses the [runtime rebuild instructions](../runtime/README.md#rebuild-after-code-changes).
 
 ## Current management and ingestion boundaries
 
@@ -227,4 +219,4 @@ one batch can still hit uniqueness constraints.
 
 See the [data model](data-model.md), [API contract](../api/api-contract.md),
 [provider contracts](microsoft-capabilities.md) and
-[Windows execution boundary](purview-windows-executor.md).
+[Runtime catalog host](purview-catalog-host.md).

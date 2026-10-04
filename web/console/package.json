@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
+    "check:reachability": "node scripts/check-reachability.mjs",
     "test": "vitest run"
   },
   "dependencies": {

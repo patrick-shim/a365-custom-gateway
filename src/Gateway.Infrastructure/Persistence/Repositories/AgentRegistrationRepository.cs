@@ -22,7 +22,6 @@ internal sealed class AgentRegistrationRepository : IAgentRepository
     {
         return await _dbContext.AgentRegistrations
             .Include(a => a.FeatureConfiguration)
-            .Include(a => a.CredentialReference)
             .FirstOrDefaultAsync(a => a.Id == id, ct);
     }
 
@@ -42,12 +41,11 @@ internal sealed class AgentRegistrationRepository : IAgentRepository
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
             var search = filter.Search.Trim();
-            // ExternalAgentId is value-converted. Search its stored value without client evaluation
-            // and use literal substring matching under an explicit case-insensitive SQL collation.
+            // Search the stored value with a parameterized literal substring.
             query = _dbContext.AgentRegistrations.FromSqlInterpolated($"""
-                SELECT * FROM [AgentRegistrations]
-                WHERE CHARINDEX({search}, [Name] COLLATE Latin1_General_100_CI_AS_SC) > 0
-                   OR CHARINDEX({search}, [ExternalAgentId] COLLATE Latin1_General_100_CI_AS_SC) > 0
+                SELECT * FROM "AgentRegistrations"
+                WHERE strpos(lower("Name"), lower({search})) > 0
+                   OR strpos(lower("ExternalAgentId"), lower({search})) > 0
                 """);
         }
 

@@ -28,7 +28,7 @@ internal sealed class ProvisioningMessageHandler
     private readonly IProvisioningExecutionLockProvider _provisioningExecutionLockProvider;
     private readonly ProvisioningWorkerOptions _options;
     private readonly ILogger<ProvisioningMessageHandler> _logger;
-    private readonly MediatR.ISender? _sender;
+    private readonly IPromptEvaluationRepository? _promptEvaluations;
 
     public ProvisioningMessageHandler(
         IAgent365ProvisioningClient provisioningClient,
@@ -43,7 +43,7 @@ internal sealed class ProvisioningMessageHandler
         IProvisioningExecutionLockProvider provisioningExecutionLockProvider,
         IOptions<ProvisioningWorkerOptions> options,
         ILogger<ProvisioningMessageHandler> logger,
-        MediatR.ISender? sender = null)
+        IPromptEvaluationRepository? promptEvaluations = null)
     {
         _provisioningClient = provisioningClient;
         _agentRepository = agentRepository;
@@ -57,7 +57,7 @@ internal sealed class ProvisioningMessageHandler
         _provisioningExecutionLockProvider = provisioningExecutionLockProvider;
         _options = options.Value;
         _logger = logger;
-        _sender = sender;
+        _promptEvaluations = promptEvaluations;
     }
 
     public async Task<MessageHandlingResult> HandleAsync(
@@ -312,6 +312,7 @@ internal sealed class ProvisioningMessageHandler
             message.Agent365ObservabilityEnabled,
             message.AzureMonitorExportEnabled);
         var operation = MapActivityOperation(receipt.ActivityType);
+        PromptShieldDecisionType? promptShieldDecision = null;
         if (destinations == ObservabilityDestinations.None)
         {
             receipt.ProcessingStatus = ProcessingStatus.Processed;
@@ -334,6 +335,20 @@ internal sealed class ProvisioningMessageHandler
         string? terminalErrorCode = null;
         try
         {
+            if (message.PromptEvaluationId is { } evaluationId)
+            {
+                var evaluation = _promptEvaluations is null ? null
+                    : await _promptEvaluations.GetByIdAsync(evaluationId, ct);
+                if (evaluation is null || evaluation.Id != receipt.Id || evaluation.AgentRegistrationId != agent.Id ||
+                    evaluation.CorrelationId != receipt.CorrelationId ||
+                    evaluation.TenantUserObjectId != message.ActorTenantUserObjectId ||
+                    evaluation.Outcome != PromptEvaluationOutcome.Blocked ||
+                    evaluation.PromptShieldDecision != PromptShieldDecisionType.Blocked ||
+                    evaluation.Agent365AgentId?.ToString("D") != agent.Agent365AgentId ||
+                    evaluation.BlueprintId?.ToString("D") != agent.BlueprintId)
+                    throw new Agent365ObservabilityConfigurationException("PromptShieldEvidenceMismatch");
+                promptShieldDecision = evaluation.PromptShieldDecision;
+            }
             if (shouldEmitAzureMonitorMirror)
             {
                 var mirrored = SanitizedTelemetryEmitter.EmitAzureMonitorMirror(
@@ -371,7 +386,8 @@ internal sealed class ProvisioningMessageHandler
                         receipt.OccurredAtUtc,
                         receipt.ReceivedAtUtc,
                         AgentIdentityClientId: agent.Agent365AgentId,
-                        BlueprintClientId: agent.BlueprintId),
+                        BlueprintClientId: agent.BlueprintId,
+                        PromptShieldDecision: promptShieldDecision),
                     ct);
             }
         }
@@ -709,15 +725,15 @@ internal sealed class ProvisioningMessageHandler
                 agent,
                 job,
                 steps.FirstOrDefault(step => step.Status != StepStatus.Completed),
-                ErrorCodes.PROVISIONING_LEGACY_JOB,
-                "This job uses a legacy provisioning sequence and requires explicit review.",
+                ErrorCodes.PROVISIONING_WORKFLOW_UNSUPPORTED,
+                "This job uses an unsupported provisioning sequence and requires explicit review.",
                 requiresManualIntervention: true,
                 message.CorrelationId,
                 ct);
 
             return MessageHandlingResult.DeadLetter(
-                ErrorCodes.PROVISIONING_LEGACY_JOB,
-                "This job uses a legacy provisioning sequence and requires explicit review.");
+                ErrorCodes.PROVISIONING_WORKFLOW_UNSUPPORTED,
+                "This job uses an unsupported provisioning sequence and requires explicit review.");
         }
 
         var stateResolution = await ResolveProvisioningStateAsync(job, steps, ct);
@@ -1081,8 +1097,8 @@ internal sealed class ProvisioningMessageHandler
                     candidate.Steps.OrderBy(step => step.OrderIndex).ToList())))
         {
             return ProvisioningStateResolution.Failed(
-                "A prior provisioning job uses a legacy workflow and cannot seed this retry.",
-                ErrorCodes.PROVISIONING_LEGACY_JOB);
+                "A prior provisioning job uses an unsupported workflow and cannot seed this retry.",
+                ErrorCodes.PROVISIONING_WORKFLOW_UNSUPPORTED);
         }
 
         if (priorProvisioningJobs.Length == 0)
@@ -1261,16 +1277,6 @@ internal sealed class ProvisioningMessageHandler
             return "The provisioning adapter did not return verified monotonic state for this step.";
         }
 
-        if (agent.CredentialReference is not null &&
-            result.State.KeyVaultSecretUri is not null &&
-            !string.Equals(
-                agent.CredentialReference.KeyVaultSecretUri,
-                result.State.KeyVaultSecretUri,
-                StringComparison.Ordinal))
-        {
-            return "The provisioning result conflicts with the persisted credential reference.";
-        }
-
         return null;
     }
 
@@ -1311,18 +1317,6 @@ internal sealed class ProvisioningMessageHandler
     {
         return stepType switch
         {
-            ProvisioningStepType.CreateAppRegistration =>
-                HasValue(state.ApplicationObjectId) && HasValue(state.ApplicationClientId),
-            ProvisioningStepType.CreateServicePrincipal =>
-                HasValue(state.ServicePrincipalObjectId),
-            ProvisioningStepType.AssignRoles =>
-                HasValue(state.AppRoleAssignmentId),
-            ProvisioningStepType.StoreCredentials =>
-                HasValue(state.PasswordCredentialKeyId) && HasValue(state.KeyVaultSecretUri),
-            ProvisioningStepType.CreateBlueprint =>
-                HasValue(state.BlueprintObjectId) && HasValue(state.BlueprintClientId),
-            ProvisioningStepType.CreateBlueprintPrincipal =>
-                HasValue(state.BlueprintPrincipalObjectId),
             ProvisioningStepType.CreateAgentIdentity =>
                 HasValue(state.AgentIdentityObjectId) &&
                 HasValue(state.AgentIdentityClientId) &&
@@ -1334,15 +1328,14 @@ internal sealed class ProvisioningMessageHandler
                     Agent365Options.DelegatedAdministratorAuthenticationMode,
                     StringComparison.Ordinal) &&
                 TryParseNonEmptyGuid(state.RegistryCreatedByObjectId, out _) &&
-                (state.Agent365RegistrationAcceptedAtUtc is not null ||
-                 state.Agent365RegistrationVerifiedAtUtc is not null),
+                state.Agent365RegistrationAcceptedAtUtc is not null,
             ProvisioningStepType.ResolveBlueprint =>
                 HasValue(state.BlueprintObjectId) &&
                 HasValue(state.BlueprintClientId),
             ProvisioningStepType.EnsureBlueprintPrincipal =>
                 HasValue(state.BlueprintPrincipalObjectId),
             ProvisioningStepType.ConfigureGatewayFederation =>
-                HasValue(state.GatewayManagedIdentityPrincipalId) &&
+                HasValue(state.GatewayWorkloadPrincipalId) &&
                 HasValue(state.GatewayFederatedCredentialId),
             ProvisioningStepType.AssignAgent365Access =>
                 HasValue(state.ObservabilityAppRoleAssignmentId) &&
@@ -1351,7 +1344,7 @@ internal sealed class ProvisioningMessageHandler
                 state.Agent365ConnectionVerifiedAtUtc is not null &&
                 IsStepComplete(ProvisioningStepType.RegisterAgent, state) &&
                 HasValue(state.BlueprintPrincipalObjectId) &&
-                HasValue(state.GatewayManagedIdentityPrincipalId) &&
+                HasValue(state.GatewayWorkloadPrincipalId) &&
                 HasValue(state.GatewayFederatedCredentialId) &&
                 HasValue(state.AgentIdentityClientId) &&
                 HasValue(state.BlueprintClientId) &&
@@ -1365,31 +1358,14 @@ internal sealed class ProvisioningMessageHandler
         Agent365ProvisioningState previous,
         Agent365ProvisioningState current)
     {
-        return Preserves(previous.ApplicationObjectId, current.ApplicationObjectId) &&
-               Preserves(previous.ApplicationClientId, current.ApplicationClientId) &&
-               Preserves(previous.ServicePrincipalObjectId, current.ServicePrincipalObjectId) &&
-               Preserves(previous.AppRoleAssignmentId, current.AppRoleAssignmentId) &&
-               Preserves(previous.PasswordCredentialKeyId, current.PasswordCredentialKeyId) &&
-               Preserves(previous.KeyVaultSecretUri, current.KeyVaultSecretUri) &&
-               Preserves(previous.CredentialExpiresAtUtc, current.CredentialExpiresAtUtc) &&
-               Preserves(previous.BlueprintObjectId, current.BlueprintObjectId) &&
+        return Preserves(previous.BlueprintObjectId, current.BlueprintObjectId) &&
                Preserves(previous.BlueprintClientId, current.BlueprintClientId) &&
                Preserves(previous.BlueprintPrincipalObjectId, current.BlueprintPrincipalObjectId) &&
                Preserves(previous.AgentIdentityObjectId, current.AgentIdentityObjectId) &&
                Preserves(previous.AgentIdentityClientId, current.AgentIdentityClientId) &&
                Preserves(previous.ObservabilityAppRoleAssignmentId, current.ObservabilityAppRoleAssignmentId) &&
-               Preserves(previous.GatewayManagedIdentityPrincipalId, current.GatewayManagedIdentityPrincipalId) &&
+               Preserves(previous.GatewayWorkloadPrincipalId, current.GatewayWorkloadPrincipalId) &&
                Preserves(previous.GatewayFederatedCredentialId, current.GatewayFederatedCredentialId) &&
-               Preserves(previous.PurviewPolicyProfileId, current.PurviewPolicyProfileId) &&
-               Preserves(previous.PurviewCollectionPolicyId, current.PurviewCollectionPolicyId) &&
-               Preserves(previous.PurviewDlpPolicyId, current.PurviewDlpPolicyId) &&
-               Preserves(previous.PurviewDlpRuleId, current.PurviewDlpRuleId) &&
-               Preserves(
-                   previous.PurviewPolicyAssignmentVerifiedAtUtc,
-                   current.PurviewPolicyAssignmentVerifiedAtUtc) &&
-               Preserves(
-                   previous.PurviewPolicyFinalVerifiedAtUtc,
-                   current.PurviewPolicyFinalVerifiedAtUtc) &&
                Preserves(previous.PlannedAgent365RegistrationId, current.PlannedAgent365RegistrationId) &&
                Preserves(previous.Agent365RegistrationId, current.Agent365RegistrationId) &&
                Preserves(previous.RegistryProvider, current.RegistryProvider) &&
@@ -1398,9 +1374,6 @@ internal sealed class ProvisioningMessageHandler
                Preserves(
                    previous.Agent365RegistrationAcceptedAtUtc,
                    current.Agent365RegistrationAcceptedAtUtc) &&
-               Preserves(
-                   previous.Agent365RegistrationVerifiedAtUtc,
-                   current.Agent365RegistrationVerifiedAtUtc) &&
                Preserves(
                    previous.Agent365ConnectionVerifiedAtUtc,
                    current.Agent365ConnectionVerifiedAtUtc);
@@ -1433,32 +1406,7 @@ internal sealed class ProvisioningMessageHandler
         agent.BlueprintId = state.BlueprintClientId ?? agent.BlueprintId;
         agent.Agent365AgentId = state.AgentIdentityClientId ?? agent.Agent365AgentId;
         agent.Agent365InstanceId = state.Agent365RegistrationId ?? agent.Agent365InstanceId;
-        agent.PurviewPolicyProfileId = state.PurviewPolicyProfileId ?? agent.PurviewPolicyProfileId;
-        agent.PurviewPolicyAssignmentVerifiedAtUtc =
-            state.PurviewPolicyFinalVerifiedAtUtc?.UtcDateTime ??
-            state.PurviewPolicyAssignmentVerifiedAtUtc?.UtcDateTime ??
-            agent.PurviewPolicyAssignmentVerifiedAtUtc;
-
-        if (state.KeyVaultSecretUri is null)
-            return;
-
-        if (agent.CredentialReference is null)
-        {
-            agent.CredentialReference = new AgentCredentialReference
-            {
-                Id = Guid.NewGuid(),
-                AgentRegistrationId = agent.Id,
-                CredentialType = CredentialType.ClientSecret,
-                KeyVaultSecretUri = state.KeyVaultSecretUri,
-                ExpiresAtUtc = state.CredentialExpiresAtUtc?.UtcDateTime,
-                CreatedAtUtc = DateTime.UtcNow
-            };
-            return;
-        }
-
-        agent.CredentialReference.ExpiresAtUtc = state.CredentialExpiresAtUtc?.UtcDateTime;
     }
-
 
     private async Task FinalizeProvisioningAsync(
         AgentRegistration agent,
@@ -1480,13 +1428,6 @@ internal sealed class ProvisioningMessageHandler
             agent.LastProvisioningErrorCode = null;
             agent.LastProvisioningErrorSummary = null;
         }
-        if (agent.PurviewConfigurationOperationId is not null)
-        {
-            if (_sender is null)
-                throw new InvalidOperationException("Deferred protection continuation is unavailable.");
-            await _sender.Send(new Gateway.Application.Protection.ResolveDeferredPurviewConfigurationCommand(agent.Id), ct);
-        }
-
         await _auditEventRepository.AddAsync(new AuditEvent
         {
             Id = Guid.NewGuid(),
@@ -1600,7 +1541,7 @@ internal sealed class ProvisioningMessageHandler
         if (!HasCurrentProvisioningSequence(job, steps))
         {
             return MessageHandlingResult.DeadLetter(
-                ErrorCodes.PROVISIONING_LEGACY_JOB,
+                ErrorCodes.PROVISIONING_WORKFLOW_UNSUPPORTED,
                 "The exhausted provisioning message does not identify the current workflow.");
         }
 
@@ -1727,7 +1668,8 @@ internal sealed class ProvisioningMessageHandler
         string? CorrelationId,
         string? ActorTenantUserObjectId = null,
         bool? Agent365ObservabilityEnabled = null,
-        bool? AzureMonitorExportEnabled = null);
+        bool? AzureMonitorExportEnabled = null,
+        Guid? PromptEvaluationId = null);
 
     [Flags]
     private enum ObservabilityDestinations

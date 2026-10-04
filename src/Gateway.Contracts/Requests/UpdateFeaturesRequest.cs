@@ -9,7 +9,5 @@ public record UpdateFeaturesRequest(
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
     bool? PromptShieldEnabled = null,
-    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
     Guid? IdempotencyKey = null,
-    string? ExpectedRowVersion = null,
-    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null);
+    string? ExpectedRowVersion = null);

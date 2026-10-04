@@ -342,7 +342,7 @@ describe("Authoritative, accessible agent setup", () => {
     expect(setupCard()).toHaveAttribute("data-motion", "static");
   });
 
-  it("names the actual closed gate settings rather than an approval portal", async () => {
+  it("names the actual closed gate settings rather than an approval console", async () => {
     server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({ ...registrationOperation, agent365RegistrationCompletionAvailable: false }));
     renderSetup();
     expect(await screen.findByText(/Registry completion gate is closed/)).toHaveTextContent("Agent365:DelegatedRegistry:Enabled");

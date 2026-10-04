@@ -20,23 +20,7 @@ builder.Services.Configure<ProvisioningWorkerOptions>(
 
 builder.Services.AddScoped<ProvisioningMessageHandler>();
 
-if (InfrastructureProvider.IsPortable(builder.Configuration))
-{
-    builder.Services.Configure<ProtectionAdminWorkerOptions>(
-        builder.Configuration.GetSection(ProtectionAdminWorkerOptions.SectionName));
-    builder.Services.AddSingleton<
-        IPurviewConnectionVerificationProvider,
-        RemotePurviewConnectionVerificationProvider>();
-    builder.Services.AddScoped<IPurviewRuntimeReadinessValidator, PurviewRuntimeReadinessValidator>();
-    builder.Services.AddScoped<ProtectionAdminMessageHandler>();
-    builder.Services.AddHostedService<RabbitMqProvisioningWorkerService>();
-    builder.Services.AddHostedService<RabbitMqProtectionAdminWorkerService>();
-}
-else
-{
-    builder.Services.AddHostedService<ProvisioningWorkerService>();
-    builder.Services.AddProtectionAdministrationWorker(builder.Configuration);
-}
+builder.Services.AddHostedService<RabbitMqProvisioningWorkerService>();
 
 var host = builder.Build();
 host.Run();

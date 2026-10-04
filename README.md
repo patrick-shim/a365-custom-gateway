@@ -1,161 +1,162 @@
 # A365 Custom Gateway
 
-Control plane that connects **independently hosted** AI agents to the Microsoft
-services that are this product's purpose: **Entra**, **Graph**, **Agent 365**,
-**Purview**, and **Prompt Shields**.
+Connect independently hosted AI agents to Microsoft Entra agent identities, Agent 365 observability, Microsoft Purview DLP, and Prompt Shields. Agents keep their own hosting and model calls; the gateway provides registration, scoped credentials, pre-model evaluation, and interaction/activity ingestion.
 
-External agents keep their own hosting and model calls. The Gateway manages
-registration, one-time ingress keys, pre-model evaluation receipts, activity /
-interaction intake, and protection workflows.
+## What the gateway does
 
-**Two layers:**
+- Registers each agent with an individual Entra agent identity under a reusable blueprint and guides an administrator through Agent 365 Registry confirmation.
+- Issues revocable, per-agent API keys; clear keys are returned only once.
+- Evaluates prompts before an external model runs, with independently configurable Prompt Shields and Purview enforcement.
+- Discovers **existing Purview policies** and adds the selected **individual agent identity** to their application locations. It preserves other targets and policy definitions. Policy owners manage classifiers, sensitive information types, rules and exclusions in Purview.
+- Records provisioning, assignment and protection state separately. Queued work, completed assignments and verified enforcement have different meanings.
+- Provides a React administrator Console with persistent light/dark theme, and equivalent terminal and React bootstrap interfaces.
 
-| Layer | Rule |
-|---|---|
-| **Product services** | Entra, Graph, Agent 365, Purview, Prompt Shields — **essential** |
-| **Infrastructure** | **Zero Microsoft dependence** — PostgreSQL, RabbitMQ, Vault/OpenBao, S3/MinIO, OCI images on **AWS / GCP / on-prem** containers must just work |
+## Architecture
 
-No Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob as runtime
-requirements.
+```mermaid
+flowchart LR
+    TUI[Terminal setup] --> Bootstrap[Shared PowerShell bootstrap]
+    Setup[React Setup] --> Bootstrap
+    Bootstrap --> Runtime[Docker Compose runtime]
+    Admin[Administrator] --> Console[React Console]
+    Console --> API[ASP.NET Core API]
+    Agent[External agent and model] --> API
+    API --> DB[(PostgreSQL)]
+    DB --> Outbox[Transactional outbox]
+    Outbox --> Bus[RabbitMQ]
+    Bus --> Worker[C# provisioning worker]
+    Worker --> Entra[Entra and Agent 365]
+    API --> Objects[S3-compatible content storage]
+    API --> Vault[Vault]
+    API --> Shield[Azure AI Content Safety / Prompt Shields]
+    API --> Graph[Graph Purview runtime APIs]
+    API <--> Catalog[Windows certificate-based Purview host]
+    Catalog --> SCC[Purview policy management]
+    API --> OTel[Agent 365 observability]
+```
 
-**Product definition:** [docs/spec/product-brief.md](docs/spec/product-brief.md)  
-**UI platform:** [docs/console/design.md](docs/console/design.md) — React + Fluent for all UIs; C# backend  
-**Runtime platform:** [docs/architecture/system-architecture.md](docs/architecture/system-architecture.md) — PostgreSQL, RabbitMQ, Vault/OpenBao, S3-compatible storage, Compose/Kubernetes
+The API and worker use .NET 10. PostgreSQL owns registration, protection, receipt, audit and outbox state. Docker Compose supplies the database, RabbitMQ, Vault and S3-compatible storage. Microsoft services provide identity, governance and observability. The Purview management host runs on Windows with a dedicated certificate identity; its signed catalog and authenticated assignment queue are separate from runtime Graph `processContent` calls.
 
-## What you get
+The bundled Compose configuration is for local development: loopback ports, development service credentials and Vault development mode. Production hardening, TLS termination, durable secret management and host service supervision require deployment-specific work. Registry beta registration is explicitly gated to development; the source does not claim production registration readiness.
 
-| Capability | Role |
-|---|---|
-| Guided install | Deploy API, worker, hosted UI, PostgreSQL, RabbitMQ, Vault/OpenBao, object storage |
-| Agent registration | Reusable blueprint → distinct child Agent ID → Gateway key |
-| Registry handoff | Signed-in Administrator completes Agent 365 Registry (Development preview) |
-| Data plane | Evaluate prompts → call your model → submit activities / interactions |
-| Protection | Purview + Prompt Shields (essential product services; per-agent usage controls) |
-| Telemetry | Agent 365 observability (essential); OpenTelemetry ops mirror (non-Microsoft) |
-| Modern UI | React + TypeScript + Fluent UI v9 for Console and Setup (migration in progress) |
-| Infra | Same images on AWS ECS/EKS, GCP, or on-prem — **no Microsoft infrastructure** |
+## Set up and run
 
-**Not in scope:** proxying the model, production Registry admission, deleting
-linked Microsoft resources on Gateway registration removal, rewriting the C#
-backend, or requiring any Microsoft-hosted infrastructure to run.
+Use Windows for the complete certificate-based Purview setup. Install PowerShell 7, .NET 10 SDK, Git, Azure CLI, and Docker with Linux containers. Node.js/npm are needed for local frontend development; application image builds install their frontend dependencies inside Docker. Bootstrap checks additional Microsoft management dependencies and sign-in requirements.
 
-## Platform direction
-
-| Layer | Direction |
-|---|---|
-| Backend | Stay on C# / .NET |
-| All UIs | React + Fluent (Console + Setup) |
-| Product APIs | Entra, Graph, Agent 365, Purview, Prompt Shields — **keep** |
-| Database | PostgreSQL (SQLite local/dev) — **not** Azure SQL |
-| Messaging | RabbitMQ — **not** Azure Service Bus |
-| Secrets | OpenBao / HashiCorp Vault — **not** Azure Key Vault |
-| Content | S3-compatible (e.g. MinIO / AWS S3) |
-| Compute | Docker Compose / Kubernetes (ECS/EKS/GKE/…) — **not** Container Apps |
-| Images | Any OCI registry (ECR, GCR, GHCR, Harbor, …) |
-
-Legacy Azure PaaS templates in-repo are transitional only.
-
-## Build and install
-
-Requirements: Git, PowerShell 7, the .NET SDK from [global.json](global.json),
-and Docker (portable profile). Legacy Azure profile additionally needs Azure CLI.
+From the repository root:
 
 ```powershell
-dotnet build .\src\A365Gateway.slnx --configuration Release
-.\gateway.cmd setup
+.\gateway.cmd init
+.\gateway.cmd plan
+.\gateway.cmd apply
+.\gateway.cmd verify
+.\gateway.cmd open
 ```
 
-On macOS or Linux: `./gateway setup`. Terminal lifecycle:
+`init` collects tenant and identity settings, **Content Safety provisioning choices**, and **Purview connection/management permissions**. `plan` presents the exact changes and binds acceptance to source and configuration. `apply` provisions and starts that accepted configuration. `verify` checks the running endpoints. Alternatively, `.\gateway.cmd up` combines configuration, review, apply and verification. `.\gateway.cmd gui` opens the React installer using the same engine and configuration.
 
-```text
-doctor -> init -> plan -> apply -> verify
-                          resume after an eligible interruption
+Start with [bootstrap instructions](bootstrap/README.md) and [configuration example](bootstrap/config.example.runtime.json). Local configuration lives in ignored `bootstrap/config.json`; generated credentials and checkpoints live in ignored `.bootstrap/`. Keep these files secure and preserve them across normal rebuilds. Never commit agent keys or generated environment files.
+
+Default local endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| [Console](http://127.0.0.1:5081) | Agent administration, existing policies and connection diagnostics |
+| [Interactive API reference](http://127.0.0.1:5081/docs) | Scalar documentation with request execution against the running gateway |
+| [API reference directly](http://127.0.0.1:5080/docs) | Same reference on the API listener |
+| [OpenAPI JSON](http://127.0.0.1:5080/openapi/v1.json) | Generated machine-readable contract |
+| [OpenAPI YAML](http://127.0.0.1:5080/openapi/v1.yaml) | Generated YAML contract |
+
+Ports are configurable. The Console sidebar links to the API reference. The published schema is readable without a token; protected operations still require their documented credentials and authorization.
+
+## Registration and protection flow
+
+```mermaid
+sequenceDiagram
+    actor Admin as Gateway administrator
+    participant Console
+    participant API as Gateway API and worker
+    participant Entra as Entra / Agent 365
+    participant Purview
+    Admin->>Console: Register agent under a blueprint
+    Console->>API: Create registration
+    API->>Entra: Provision individual identity
+    API-->>Console: Registry confirmation required
+    Admin->>Console: Finish registration with delegated consent
+    Console->>API: Confirm Registry operation
+    API->>Entra: Register and verify existing identity
+    API-->>Console: Active
+    Admin->>Console: Select existing Purview policy
+    Console->>API: Review then confirm exact agent assignment
+    API->>Purview: Add individual identity and read back scope
+    API-->>Console: Assignment state and enforcement observations
 ```
 
-Choose the deploy profile during setup (portable Compose/Kubernetes target;
-legacy Azure only while still supported). Registry provisioning is an explicitly
-acknowledged **Development-only** preview. Staging and production admission remain
-closed. Deployment health does not prove telemetry delivery or policy enforcement.
+An assigned policy is not automatically proof that blocking has propagated. Verify normal allow and synthetic-sensitive block through the gateway. Verify a same-blueprint sibling independently, including its policy scope; other policies may also apply. Settings contains ongoing Purview diagnostics. Initial connection setup belongs to bootstrap.
 
-## Connect an external agent
+## Call the agent API
 
-**Portable (recommended):** after `.\gateway.cmd up`, open the React Console at
-`http://127.0.0.1:5081`. Full portable auth / Registry / Active notes:
-[docs/portable/README.md](docs/portable/README.md).
+Administrative endpoints use an Entra **access token for the Gateway API** with the required gateway role. Agent endpoints use a **gateway-issued agent key**. Both use `Authorization: Bearer`; these credentials are not interchangeable. Use HTTPS outside the allowed local loopback development configuration.
 
-1. Sign in to the hosted operator UI — **React Console on portable**; Blazor Admin
-   UI only on the legacy Azure profile until cutover.
-2. Register an agent on a new or compatible existing identity blueprint
-   (Console: name → blueprint → key).
-3. Review optional telemetry and protection choices when offered (Prompt Shields
-   on the agent; DLP under Data protection).
-4. Save the API endpoint, external agent ID, and one-time Gateway key securely.
-5. Complete the signed-in administrator handoff for Agent 365 Registry
-   (**Finish Agent 365 registration** → Confirm). This is not Purview approval.
-6. Wait for the provisioning worker to verify the registration (**Active**).
-7. From the external agent: evaluate each prompt → call your model → submit the
-   interaction with the same evaluation receipt.
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Gateway
+    participant Protection as Enabled protections
+    participant Model as Agent's model
+    Agent->>Gateway: POST /api/v1/prompts:evaluate
+    Gateway->>Protection: Evaluate exact prompt and user context
+    Protection-->>Gateway: Verdict
+    Gateway-->>Agent: Allow + bound receipt, or block/unavailable
+    opt Allowed with valid receipt
+        Agent->>Model: Call model
+        Model-->>Agent: Response
+        Agent->>Gateway: POST /api/v1/ai-interactions + receipt
+        Gateway-->>Agent: 202 accepted for processing
+    end
+```
 
-Expected contracts:
-
-- Key shown once; lost key → replace, not re-register.
-- Uncertain create → exact-ID readback, never a second create.
-- HTTP 202 → accepted/queued, not Active / delivered / enforced.
-- Active registration ≠ optional protection or telemetry ready.
-- Delete Gateway registration preserves linked Microsoft resources.
-
-## Sample integration
-
-The [sample client](src/ExternalAgent.Sample/Program.cs) requires HTTPS and reads
-the Gateway key through a non-echoing prompt:
+PowerShell example (set `GATEWAY_AGENT_KEY`, `GATEWAY_EXTERNAL_AGENT_ID` and `GATEWAY_TENANT_USER_ID` securely in your environment). This evaluates a normal prompt and submits a **simulated** response. Replace the marked line with your model call only after the allow gate:
 
 ```powershell
-dotnet run --project .\src\ExternalAgent.Sample -- `
-  --api-base-url https://YOUR-GATEWAY-API/ `
-  --external-agent-id YOUR-EXTERNAL-AGENT-ID `
-  --tenant-user-object-id YOUR-USER-OBJECT-ID `
-  --message "Hello through the Gateway"
+$base = 'http://127.0.0.1:5080'
+$headers = @{ Authorization = "Bearer $env:GATEWAY_AGENT_KEY"; 'Idempotency-Key' = [guid]::NewGuid().ToString() }
+$request = @{
+    externalAgentId = $env:GATEWAY_EXTERNAL_AGENT_ID
+    interactionId = [guid]::NewGuid().ToString()
+    occurredAtUtc = [DateTime]::UtcNow.ToString('o')
+    userContext = @{ tenantUserObjectId = $env:GATEWAY_TENANT_USER_ID }
+    prompt = @{ contentType = 'text/plain'; content = 'Explain what a gateway does.' }
+}
+$evaluation = Invoke-RestMethod "$base/api/v1/prompts:evaluate" -Method Post -Headers $headers -ContentType 'application/json' -Body ($request | ConvertTo-Json -Depth 8)
+if (-not $evaluation.allowed -or -not $evaluation.evaluationReceiptId) { throw 'Model call not authorized.' }
+
+$modelResponse = 'A gateway connects services.' # Replace with your model call.
+$request.sessionId = $null
+$request.model = $null
+$request.metadata = $null
+$request.response = @{ contentType = 'text/plain'; content = $modelResponse }
+$request.promptEvaluationReceiptId = $evaluation.evaluationReceiptId
+$headers['Idempotency-Key'] = [guid]::NewGuid().ToString()
+Invoke-RestMethod "$base/api/v1/ai-interactions" -Method Post -Headers $headers -ContentType 'application/json' -Body ($request | ConvertTo-Json -Depth 8)
 ```
 
-It calls `POST /api/v1/prompts:evaluate` before its fixed-response model stub.
-Replace the stub with your model callback while preserving that gate. A valid,
-matching, unexpired allow receipt is required before generation and is consumed
-once during ingestion.
+Receipt consumption requires matching agent, interaction, prompt, user context and timestamp, current protection state, and an unexpired receipt. A block returns `403`; unavailable required protection fails closed with `503`. Do not call the model after either response. Preserve a request's UUID v4 `Idempotency-Key` for its retries; use a different key for a different operation. `202` means accepted for processing, not confirmed appearance in a Microsoft destination.
 
-See the [API guide](docs/api/api-contract.md) and [OpenAPI](docs/api/openapi.yaml).
+For activity batches, credential operations, pagination, assignment review/confirmation and concurrency headers, use the [API contract](docs/api/api-contract.md) and [generated schema](docs/api/openapi.yaml). The [C# sample agent](src/ExternalAgent.Sample/) exercises the integration with a model stub.
 
-## Optional protection and telemetry
+## Repository and operations
 
-| Capability | Purpose |
-|---|---|
-| Agent 365 observability | Registration-scoped sanitized activity export |
-| OpenTelemetry mirror | Sanitized monitoring telemetry to operator-chosen backends |
-| Prompt Shields | Prompt-attack evaluation before the external model call |
-| Microsoft Purview | Tenant connection, shared blueprint DLP, runtime evidence |
+| Directory | Responsibility |
+| --- | --- |
+| `src/` | API, application/domain/contracts, infrastructure, Microsoft adapters, worker and Purview host |
+| `web/console/` | Administrator UI |
+| `web/setup/`, `tools/Gateway.Setup/` | React installer and its local host |
+| `bootstrap/` | Shared setup engine, configuration schema and tests |
+| `deploy/runtime/` | Compose runtime and container configuration |
+| `infrastructure/bicep/` | Optional Content Safety provisioning only |
+| `src/ExternalAgent.Sample/` | External-agent integration sample |
+| `tests/`, `tools/scripts/` | Regression checks and explicit operator diagnostics |
+| `docs/`, `operations/` | Architecture, API and operating instructions |
 
-Both protections Off is a complete core registration. Simulation and saved
-configuration do not prove current enforcement.
-
-## Repository layout
-
-| Directory | Contents |
-|---|---|
-| [src](src) | Gateway API, worker, legacy Blazor Admin UI, providers, sample client |
-| [web/console](web/console) | React + Fluent Console (target hosted UI) |
-| [tools](tools) | Legacy Setup UI, database migrator, installer helpers |
-| [bootstrap](bootstrap) | Installer engine (portable profiles target; Azure profile transitional) |
-| [infrastructure](infrastructure) | Portable-target docs + legacy Bicep/SQL assets |
-| [operations](operations) | Maintenance and verification |
-| [docs](docs/README.md) | Product, architecture, UI, and API documentation |
-
-## Documentation map
-
-| Need | Start here |
-|---|---|
-| Objective, scope, features, platforms | [Product brief](docs/spec/product-brief.md) |
-| Portable runtime architecture | [System architecture](docs/architecture/system-architecture.md) |
-| UI stack (all UIs) | [UI design](docs/console/design.md) |
-| Installer / profiles | [Bootstrap](bootstrap/README.md) |
-| Portable Compose E2E handoff | [Portable profile](docs/portable/README.md) |
-| Infrastructure profiles | [Infrastructure](infrastructure/README.md) |
-| Full index | [docs/README.md](docs/README.md) |
+Use [runtime operations](docs/runtime/README.md) for rebuilds and diagnostics, [validation instructions](tests/README.md) for executable checks, and the [documentation index](docs/README.md) for detailed design. Process health, registration readiness, protection enforcement and downstream visibility must be verified separately.

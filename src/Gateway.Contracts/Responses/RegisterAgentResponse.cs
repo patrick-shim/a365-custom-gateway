@@ -10,6 +10,4 @@ public record RegisterAgentResponse(
     Guid OperationId,
     DateTime CreatedAtUtc,
     LinksDto? Links,
-    AgentGatewayCredentialDto? GatewayCredential = null,
-    Guid? PurviewConfigurationOperationId = null,
-    string? PurviewConfigurationStatus = null);
+    AgentGatewayCredentialDto? GatewayCredential = null);

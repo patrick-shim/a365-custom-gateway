@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { utcTime } from "./display";
 
 // Validate the wire contracts before data reaches a page. Unknown fields are
 // allowed so additive API changes do not break older Console releases.
@@ -114,57 +113,6 @@ export const blueprintListSchema = z.object({
   })),
 });
 
-const connectionSchema = z.object({
-  id: text,
-  tenantId: text,
-  status: text,
-  authorityKind: nullableText,
-  authorityApplicationId: nullableText,
-  authorityServicePrincipalObjectId: nullableText,
-  activeInventoryGenerationId: nullableText,
-  authorizedAtUtc: nullableText,
-  expiresAtUtc: nullableText,
-  lastVerifiedAtUtc: nullableText,
-  lastFailureCode: nullableText,
-  rowVersion: text,
-});
-export const connectionResponseSchema = z.object({ connection: connectionSchema.nullable() });
-export const inventorySchema = z.object({
-  generationId: text,
-  tenantId: text,
-  retrievedAtUtc: text,
-  expiresAtUtc: text,
-  isExpired: z.boolean(),
-  items: z.array(z.object({ id: text, exactName: text, publisher: z.string() })),
-});
-export const dlpProfilesSchema = z.object({
-  items: z.array(z.object({
-    id: text,
-    blueprintApplicationId: text,
-    displayName: text,
-    mode: text,
-    policyMode: nullableText.optional(),
-    status: text,
-    sensitiveInformationTypeName: z.string(),
-    sensitiveInformationTypes: z.array(z.object({
-      sensitiveInformationTypeId: text,
-      exactName: text,
-    })).nullish(),
-    readiness: z.object({ isReady: z.boolean(), blockers: z.array(z.string()) }),
-    lastReadbackAtUtc: nullableText,
-    rowVersion: text,
-  })),
-});
-
-export const capabilitiesSchema = z.object({
-  items: z.array(z.object({
-    id: text,
-    capability: text,
-    status: text,
-    lastFailureCode: nullableText,
-    lastReadbackAtUtc: nullableText,
-  })),
-});
 export const systemConfigSchema = z.object({
   provisioningMode: text,
   provisioningExecutionEnabled: z.boolean(),
@@ -211,53 +159,21 @@ export const revokedCredentialSchema = z.object({
   alreadyRevoked: z.boolean(),
 });
 
-export const reviewSchema = z.object({
-  reviewTokenId: text,
-  reviewToken: text,
-  expiresAtUtc: text,
-  review: z.object({
-    tenantId: text,
-    operationType: text,
-    targetType: text,
-    targetIdentifier: text,
-    verificationMode: nullableText.optional(),
-    readinessDisclaimer: z.string(),
-  }),
-});
-export const confirmationSchema = z.object({
-  confirmationTokenId: text,
-  confirmationToken: text,
-});
-export const acceptedOperationSchema = z.object({
-  operationId: text,
-  status: text,
-  correlationId: text,
-  companionLaunch: z.unknown().nullable().optional(),
-});
-export const operationResponseSchema = z.object({
-  operation: z.object({
-    id: text,
-    type: text,
-    tenantId: text,
-    targetType: text,
-    status: text,
-    failureCode: nullableText,
-    requiredAction: nullableText,
-    requiresManualIntervention: z.boolean(),
-    correlationId: text,
-    blockers: z.array(z.string()),
-    steps: z.array(z.object({ step: text, status: text, failureCode: nullableText })),
-  }),
-});
-
 export type Agent = z.infer<typeof agentSchema>;
+export const purviewPolicyCatalogSchema = z.object({
+  tenantId: z.string().uuid(), retrievedAtUtc: z.string().datetime({ offset: true }), source: z.literal("Purview"),
+  items: z.array(z.object({
+    id: z.string().uuid(), displayName: z.string().min(1).max(256), mode: z.string(),
+    enforcementPlanes: z.array(z.string()), individualApplicationIds: z.array(z.string().uuid()),
+    revision: z.string().regex(/^[a-f0-9]{64}$/),
+    compatibility: z.object({ canAssign: z.boolean(), reason: z.string().nullable() }),
+  })).max(2048),
+});
 export type AgentDetail = z.infer<typeof agentDetailSchema>;
 export type RegistrationOperation = z.infer<typeof registrationOperationSchema>;
 export type Blueprint = z.infer<typeof blueprintListSchema>["items"][number];
-export type PurviewConnection = z.infer<typeof connectionSchema>;
 export type Registration = z.infer<typeof registrationSchema>;
 export type GatewayCredential = z.infer<typeof credentialSchema>;
-export type ConnectionReview = z.infer<typeof reviewSchema> & { expectedRowVersion: string };
 
 export interface RegisterAgentRequest {
   externalAgentId: string;
@@ -267,10 +183,4 @@ export interface RegisterAgentRequest {
   blueprint:
     | { mode: "UseExisting"; blueprintObjectId: string }
     | { mode: "CreateNew"; displayName: string };
-}
-
-export function connectionIsUsable(connection: PurviewConnection | null): boolean {
-  return connection !== null && connection.status === "Connected" &&
-    connection.lastVerifiedAtUtc !== null &&
-    (connection.expiresAtUtc === null || utcTime(connection.expiresAtUtc) > Date.now());
 }

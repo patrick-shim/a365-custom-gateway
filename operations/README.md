@@ -1,65 +1,34 @@
-# Gateway operations
+# Runtime gateway operations
 
-Routine administration for an installed Gateway.
+Operate the current installation with `gateway status`, `gateway verify`,
+`gateway doctor`, and `gateway diagnose`. Rebuild/redeploy instructions are in
+[the runtime guide](../docs/runtime/README.md).
 
-- Product / platforms: [product brief](../docs/spec/product-brief.md)
-- UI: [UI design](../docs/console/design.md)
-- Runtime: [system architecture](../docs/architecture/system-architecture.md)
-- Fresh install: [bootstrap](../bootstrap/README.md)
+## Individual-agent DLP verification
 
-Commands use an explicitly selected configuration and its preserved deployment
-state. Prefer the **zero-Microsoft-infra** profile (Compose/Kubernetes +
-PostgreSQL + RabbitMQ + Vault/OpenBao + S3). Essential product services remain
-Entra / Graph / Agent 365 / Purview / Prompt Shields. Legacy Azure infrastructure
-operations remain only for installations that still use that transitional profile.
+Use `tools/scripts/diagnostics/Test-GatewayAgentDlp.ps1` from the repository root with the testing agent's key file, external ID,
+tenant user ID, and a new evidence file path. It exercises the public gateway API
+with normal and synthetic sensitive input. A readiness/authentication failure is
+not a DLP block: require `Purview=Allowed` with a receipt for normal input and
+`PROMPT_BLOCKED_BY_DLP` without a receipt for the sensitive sample. Run the C#
+`ExternalAgent.Sample` to verify the pre-model gate and normal ingestion, using
+stdin for its key. The sample uses a model stub, not a production model.
 
-## Launcher commands
+For scope isolation, use a child under the same blueprint and the same user/input.
+A sibling gateway with Purview disabled is only a control; also check its own
+Graph protection scope and policy readback. Restore any temporary test access.
+See the [policy-consumption guide](../docs/architecture/purview-policy-consumption.md)
+for scope checks and enforcement boundaries.
 
-| Command | Boundary |
-|---|---|
-| `gateway status` | Read local deployment state |
-| `gateway verify` | Read back current bindings for the selected profile |
-| `gateway open` | Open the recorded verified hosted UI endpoint |
-| `gateway diagnose` | Create a bounded, sanitized diagnostic bundle |
-| `gateway resume` | Reconcile eligible interrupted work for the same accepted plan |
-| `gateway upgrade-admin-ui` | Transitional Admin UI-only promotion (legacy Azure profile) |
-| `gateway recover-database` | Reconcile an eligible interrupted database operation |
-| `gateway repair-database` | Run the exact reviewed database repair contract |
+## Runtime queue handling and source checks
 
-On Windows use `.\gateway.cmd`; on macOS/Linux use `./gateway`.
-Run `gateway --help` for arguments. Never edit a checkpoint to force progress,
-reuse a deleted target, or replay a create whose provider outcome is unknown.
+RabbitMQ publishers require broker confirmation before outbox completion. Failed
+deliveries carry an attempt counter; exhausted workflows are finalized from fresh
+durable state. Dead letters are retained in `gateway-provisioning-v3.dead-letter`. The original is acknowledged only
+after the retry/dead-letter publication is confirmed. Unknown publish outcomes
+can duplicate delivery, so handler idempotency remains required. If durable
+finalization is unavailable, the message stays retryable for reconciliation.
+Inspect dead letters; do not purge or blindly replay them.
 
-## Supported implementation files
-
-- [Provisioning preflight](verify-provisioning-prerequisites.ps1) — read-only
-  prerequisite checker used by the canonical verifier
-- [Admin UI promotion](upgrade-bootstrap-admin-ui.ps1) — transitional hosted-UI
-  promotion for the legacy profile; Console cutover replaces this path
-- [Windows package builder](build-purview-executor-package.ps1) — Purview executor
-  packaging when that optional capability is enabled
-- [Upgrade orchestration](gateway-upgrade.ps1) / [upgrade contract](gateway-upgrade.md) —
-  **legacy Azure-profile** source-bound maintenance; portable-profile maintenance
-  uses image digest + PostgreSQL migrator contracts without Azure What-If
-
-## Purview automation reference prerequisite
-
-Before the first Purview tenant connection, ensure the Security & Compliance
-service-principal reference exists for the installed automation application.
-This is a Microsoft 365 provider prerequisite, independent of whether the Gateway
-runs on AWS, GCP, Azure, or on-prem. Follow the exact AppId / ObjectId checks
-required by the installed deployment; do not rewrite bootstrap receipts when
-repairing an external prerequisite.
-
-## Portable vs legacy maintenance
-
-| Concern | Portable target | Legacy Azure profile |
-|---|---|---|
-| Plan dry-run | Compose/Kubernetes manifests | Bicep What-If |
-| Database | PostgreSQL migrator | Azure SQL migrator path |
-| Queues | RabbitMQ | Service Bus |
-| Secrets | Vault/OpenBao | Key Vault |
-| Images | Any OCI registry digests | ACR digests |
-
-Product logic (outbox, workflow versions, exact-ID recovery) is identical across
-profiles.
+Standalone diagnostics are in [tools/scripts](../tools/scripts/README.md).
+Run [source and regression checks](../tests/README.md) before deployment.

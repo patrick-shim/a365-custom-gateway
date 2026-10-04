@@ -12,34 +12,22 @@ internal sealed class SystemConfigurationConfiguration : IEntityTypeConfiguratio
     {
         builder.ToTable("SystemConfigurations", t =>
             t.HasCheckConstraint("CK_SystemConfigurations_Singleton",
-                $"[Id] = '{SingletonId}'"));
+                $"\"Id\" = '{SingletonId}'"));
 
         builder.HasKey(e => e.Id);
 
-        builder.Property(e => e.ProvisioningMode).HasMaxLength(20);
         builder.Property(e => e.DefaultObservabilityMode).HasMaxLength(20);
-        builder.Property(e => e.DefaultPurviewMode).HasMaxLength(20);
         builder.Property(e => e.RowVersion).IsRowVersion();
 
         builder.HasData(new SystemConfiguration
         {
             Id = SingletonId,
-            ProvisioningMode = "Automatic",
             DefaultObservabilityMode = "Agent365",
-            DefaultPurviewEnabled = false,
             DefaultPromptShieldEnabled = false,
-            RetentionDaysActivityReceipts = 90,
-            RetentionDaysAuditEvents = 365,
             RetentionDaysIdempotencyRecords = 7,
-            RetentionDaysOutboxMessages = 30,
             RateLimitPerClient = 100,
             RateLimitPerAgent = 1000,
             RateLimitGlobal = 10000,
-            ReconciliationEnabled = true,
-            ReconciliationIntervalHours = 24,
-            StuckTransitionTimeoutDays = 7,
-            UseGraphAgentRegistration = false,
-            UseCliProvisioningFallback = false,
             UpdatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc)
         });
     }

@@ -109,12 +109,12 @@ internal sealed record Arguments(
 
         if (!values.TryGetValue("--api-base-url", out var apiText) ||
             !Uri.TryCreate(apiText, UriKind.Absolute, out var apiBaseUrl) ||
-            apiBaseUrl.Scheme != Uri.UriSchemeHttps ||
+            (apiBaseUrl.Scheme != Uri.UriSchemeHttps && !(apiBaseUrl.Scheme == Uri.UriSchemeHttp && apiBaseUrl.IsLoopback)) ||
             !string.IsNullOrEmpty(apiBaseUrl.UserInfo) ||
             !string.IsNullOrEmpty(apiBaseUrl.Query) ||
             !string.IsNullOrEmpty(apiBaseUrl.Fragment))
         {
-            error = "--api-base-url must be a plain HTTPS absolute URI.";
+            error = "--api-base-url must be a plain HTTPS URI (HTTP is allowed only for loopback development).";
             return false;
         }
 

@@ -29,16 +29,12 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
         ILogger<PurviewPolicyClient> logger,
         IOptions<PurviewOptions> options,
         IMemoryCache cache,
-        IPurviewGraphClient graph,
-        Guid? runtimeProbePrincipalId = null,
-        TimeProvider? runtimeProbeClock = null)
+        IPurviewGraphClient graph)
     {
         _logger = logger;
         _options = options.Value;
         _cache = cache;
         _graph = graph;
-        _runtimeProbePrincipalId = runtimeProbePrincipalId;
-        _runtimeProbeClock = runtimeProbeClock ?? TimeProvider.System;
     }
 
     public bool IsEnabled => _options.Enabled;
@@ -181,6 +177,20 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
         }
 
         var refreshed = await GetProtectionScopesAsync(interaction, forceRefresh: true, cancellationToken);
+        if (interaction.UseAgentIdentity)
+        {
+            // Graph's integration contract says to refresh scopes on "modified"
+            // and enforce the actions already returned by processContent. A modified
+            // marker is not itself a missing content verdict (it is also returned by
+            // this tenant with the exact current compute ETag). Do not loop forever.
+            // Still refuse an allow if refreshed scope no longer supports inline evaluation.
+            if (refreshed.PolicyActions.TryGetValue(activity, out var currentActions) && ContainsBlockAction(currentActions))
+                return Blocked(currentActions, decision.ProtectionScopeState);
+            if (requireInlineDecision && (!refreshed.ExecutionModes.TryGetValue(activity, out var currentMode) ||
+                !string.Equals(currentMode, EvaluateInline, StringComparison.OrdinalIgnoreCase)))
+                throw new PurviewPolicyException("PURVIEW_INLINE_SCOPE_NOT_READY", "A current inline protection scope could not be confirmed.", isTransient: true);
+            return decision;
+        }
         var refreshedDecision = await ProcessContentAsync(
             interaction,
             activity,
@@ -208,7 +218,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
         bool forceRefresh,
         CancellationToken cancellationToken)
     {
-        var key = new ScopeCacheKey(interaction.TenantUserObjectId, interaction.BlueprintClientId);
+        var key = new ScopeCacheKey(interaction.TenantUserObjectId, interaction.BlueprintClientId, interaction.AgentIdentityClientId);
         if (!forceRefresh && _cache.TryGetValue(key, out ProtectionScopes? cached) && cached is not null)
             return cached;
 
@@ -216,6 +226,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
         await gate.WaitAsync(cancellationToken);
         try
         {
+            if (forceRefresh) _cache.Remove(key);
             if (!forceRefresh && _cache.TryGetValue(key, out cached) && cached is not null)
                 return cached;
 
@@ -253,7 +264,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
                 ["integratedAppMetadata"] = IntegratedAppMetadata()
             },
             ifNoneMatch: null,
-            cancellationToken);
+            cancellationToken, interaction);
 
         if (response.StatusCode != System.Net.HttpStatusCode.OK)
         {
@@ -326,7 +337,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
                     content)
             },
             scopes.ETag,
-            cancellationToken);
+            cancellationToken, interaction);
 
         if (response.StatusCode is System.Net.HttpStatusCode.Accepted
             or System.Net.HttpStatusCode.NoContent)
@@ -353,6 +364,8 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
                 "Microsoft Graph did not return a valid Purview policy decision.");
         }
 
+        if (interaction.UseAgentIdentity && (response.Body["processingErrors"] is not JsonArray || response.Body["policyActions"] is not JsonArray))
+            throw new PurviewPolicyException("PURVIEW_PROCESS_INVALID_RESPONSE", "Purview did not return a complete policy decision.");
         if (response.Body["processingErrors"] is JsonArray errors && errors.Count > 0)
         {
             throw new PurviewPolicyException(
@@ -401,7 +414,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
                     includeAgentInfo: false)
             },
             ifNoneMatch: null,
-            cancellationToken);
+            cancellationToken, interaction);
 
         if (response.StatusCode != System.Net.HttpStatusCode.Created)
         {
@@ -476,7 +489,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
     private static JsonObject ApplicationLocation(PurviewInteraction interaction) => new()
     {
         ["@odata.type"] = "microsoft.graph.policyLocationApplication",
-        ["value"] = interaction.BlueprintClientId
+        ["value"] = interaction.UseAgentIdentity ? interaction.AgentIdentityClientId : interaction.BlueprintClientId
     };
 
     private static string UserPath(string userObjectId, string suffix) =>
@@ -552,7 +565,7 @@ public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
         }
     }
 
-    private readonly record struct ScopeCacheKey(string UserObjectId, string BlueprintClientId);
+    private readonly record struct ScopeCacheKey(string UserObjectId, string BlueprintClientId, string AgentIdentity);
 
     private sealed record ProtectionScopes(
         string? ETag,

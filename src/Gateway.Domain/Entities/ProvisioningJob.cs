@@ -9,7 +9,7 @@ public class ProvisioningJob
     public OperationType Type { get; set; }
     public JobStatus Status { get; set; }
     public int PercentComplete { get; set; }
-    public int WorkflowVersion { get; set; } = 1;
+    public int WorkflowVersion { get; set; } = Gateway.Domain.Models.ProvisioningWorkflow.CurrentVersion;
     public string? ErrorCode { get; set; }
     public string? ErrorSummary { get; set; }
     public DateTime StartedAtUtc { get; set; }

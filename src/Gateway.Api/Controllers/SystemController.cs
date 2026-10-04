@@ -22,20 +22,17 @@ public class SystemController : ControllerBase
 {
     private readonly ISender _sender;
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
-    private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly IPromptShieldClient _promptShieldClient;
-    private readonly IProtectionAdminOperationLockProvider _protectionLocks;
+    private readonly ISystemConfigurationLockProvider _protectionLocks;
 
     public SystemController(
         ISender sender,
         ProvisioningAdmissionGate provisioningAdmissionGate,
-        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
         IPromptShieldClient promptShieldClient,
-        IProtectionAdminOperationLockProvider protectionLocks)
+        ISystemConfigurationLockProvider protectionLocks)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
-        _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
         _promptShieldClient = promptShieldClient;
         _protectionLocks = protectionLocks;
     }
@@ -62,8 +59,6 @@ public class SystemController : ControllerBase
         CancellationToken cancellationToken)
     {
         var isProtectionMutation =
-            request.DefaultPurviewEnabled is not null ||
-            request.DefaultPurviewMode is not null ||
             request.DefaultPromptShieldEnabled is not null ||
             request.IdempotencyKey is not null ||
             request.ExpectedRowVersion is not null;
@@ -88,25 +83,12 @@ public class SystemController : ControllerBase
                 request.ExpectedRowVersion);
         }
 
-        // Forward compatibility-only members so application validation rejects any
-        // non-null write explicitly instead of silently accepting a false control.
         var command = new UpdateSystemConfigCommand(
-            request.ProvisioningMode,
             request.DefaultObservabilityMode,
-            request.DefaultPurviewEnabled,
-            request.DefaultPurviewMode,
-            request.RetentionDaysActivityReceipts,
-            request.RetentionDaysAuditEvents,
             request.RetentionDaysIdempotencyRecords,
-            request.RetentionDaysOutboxMessages,
             request.RateLimitPerClient,
             request.RateLimitPerAgent,
             request.RateLimitGlobal,
-            request.ReconciliationEnabled,
-            request.ReconciliationIntervalHours,
-            request.StuckTransitionTimeoutDays,
-            request.UseGraphAgentRegistration,
-            request.UseCliProvisioningFallback,
             User.GetObjectId(),
             request.DefaultAgent365ObservabilityEnabled,
             request.DefaultAzureMonitorExportEnabled,
@@ -142,7 +124,6 @@ public class SystemController : ControllerBase
         config with
         {
             ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
-            PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled,
             PromptShieldAvailable = _promptShieldClient.IsEnabled,
             RegistrationDefaults = new AgentRegistrationDefaultsDto(
                 Agent365RegistrationCapabilities.DefaultEnvironment,

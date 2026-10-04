@@ -24,4 +24,8 @@
     <ProjectReference Include="..\Gateway.Observability\Gateway.Observability.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gateway.RuntimeDataPlane.Tests" />
+    <InternalsVisibleTo Include="Gateway.Purview.Consumption.Tests" />
+  </ItemGroup>
 </Project>

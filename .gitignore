@@ -5,6 +5,7 @@
 # Node / web app
 **/node_modules/
 web/console/dist/
+web/setup/dist/
 web/console/tsconfig.tsbuildinfo
 
 # Browser automation / screenshots
@@ -24,14 +25,17 @@ web/console/tsconfig.tsbuildinfo
 Thumbs.db
 .DS_Store
 
-# Local secrets / portable runtime env (never commit credentials)
+# Local secrets / runtime runtime env (never commit credentials)
 .env
 .env.*
 !.env.example
-!deploy/portable/.env.example
-deploy/portable/.env
-deploy/portable/.env.local
-deploy/portable/.env.runtime
+!deploy/runtime/.env.example
+deploy/runtime/.env
+deploy/runtime/.env.local
+deploy/runtime/.env.runtime
 
-# Local wizard copy; keep only config.example.portable.json in git
-bootstrap/config.portable.json
+# Local wizard copy; keep only config.example.runtime.json in git
+bootstrap/config.runtime.json
+
+# Terminal/GUI-generated installation choices
+bootstrap/config.json

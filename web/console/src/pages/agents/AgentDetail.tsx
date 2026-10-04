@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button } from "@fluentui/react-components";
 import { api } from "../../api/client";
@@ -9,11 +8,14 @@ import { StatusPill } from "../../components/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
 import { AgentCredentials } from "./AgentCredentials";
 import { AgentRegistrationProgress } from "./AgentRegistrationProgress";
+import { AgentDataProtection } from "./AgentDataProtection";
 
 export function AgentDetail() {
   const { id = "" } = useParams();
   const qc = useQueryClient();
-  const [tab, setTab] = useState("protection");
+  const [params, setParams] = useSearchParams();
+  const requestedTab = params.get("tab") ?? "protection";
+  const tab = ["protection", "data-protection", "identity", "api", "activity"].includes(requestedTab) ? requestedTab : "protection";
   const agent = useQuery({
     queryKey: ["agent", id], queryFn: () => api.getAgent(id),
     refetchInterval: query => query.state.error ? false :
@@ -44,8 +46,10 @@ export function AgentDetail() {
         <>
           {(a.provisioning || ["Draft", "Provisioning", "AwaitingAdminApproval", "Failed", "RequiresManualIntervention"].includes(a.status)) &&
             <AgentRegistrationProgress key={id} agent={a} />}
-          <TabList selectedValue={tab} onTabSelect={(_, data) => { if (typeof data.value === "string") setTab(data.value); }} style={{ marginBottom: 16, flexWrap: "wrap" }}>
-            <Tab value="protection">Prompt Shields</Tab><Tab value="identity">Identity</Tab>
+          <TabList selectedValue={tab} onTabSelect={(_, data) => {
+            if (typeof data.value === "string") setParams(previous => { const next = new URLSearchParams(previous); next.set("tab", data.value as string); return next; });
+          }} style={{ marginBottom: 16, flexWrap: "wrap" }}>
+            <Tab value="protection">Prompt Shields</Tab><Tab value="data-protection">Data protection</Tab><Tab value="identity">Identity</Tab>
             <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>
           </TabList>
           {tab === "protection" && <Card style={{ gap: 16, padding: 24 }}>
@@ -62,10 +66,11 @@ export function AgentDetail() {
                 {!canChangeProtection && <Caption1>Protection settings become available after the agent is provisioned.</Caption1>}
               </>
             ) : <Body1>The Gateway did not report this agent's protection settings.</Body1>}
-            {shield.isPending && <Body1 role="status">Saving and checking the setting...</Body1>}
+            {shield.isPending && <Spinner size="tiny" label="Saving and checking the setting..." />}
             {shield.isError && <ErrorState title="The protection change was not confirmed" error={shield.error} />}
             <Caption1>This setting does not enable or disable the agent.</Caption1>
           </Card>}
+          {tab === "data-protection" && <AgentDataProtection key={id} agent={a} />}
           {tab === "identity" && <Card style={{ gap: 12, padding: 24 }}>
             {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => void blueprints.refetch()} />}
             <Text weight="semibold">{blueprintName(a, blueprints.data)}</Text>

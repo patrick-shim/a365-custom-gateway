@@ -4,13 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
-    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.FluentUI.AspNetCore.Components" Version="4.14.4" />
-  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Gateway.Setup.Tests" />

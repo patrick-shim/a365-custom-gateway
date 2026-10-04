@@ -11,8 +11,7 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddPurviewServices(
         this IServiceCollection services,
-        IConfiguration configuration,
-        bool requireRuntimeIdentityBinding = false)
+        IConfiguration configuration)
     {
         services.AddOptions<PurviewOptions>()
             .Bind(configuration.GetSection(PurviewOptions.SectionName))
@@ -21,36 +20,8 @@ public static class DependencyInjection
             new PurviewOptionsValidator());
 
         services.AddMemoryCache();
-        services.AddSingleton<IPurviewTokenProvider>(serviceProvider =>
-            new ManagedIdentityPurviewTokenProvider(
-                serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
-                configuration,
-                requireRuntimeIdentityBinding
-                    ? serviceProvider.GetRequiredService<IPurviewRuntimeIdentityBinding>()
-                    : serviceProvider.GetService<IPurviewRuntimeIdentityBinding>()));
-        services.AddSingleton<IPurviewTokenRoleSource, ManagedIdentityPurviewTokenRoleSource>();
-        services.AddSingleton<IPurviewTokenRoleAttestor>(serviceProvider =>
-            new PurviewTokenRoleAttestor(
-                serviceProvider.GetRequiredService<IPurviewTokenRoleSource>()));
-        services.AddSingleton<IPurviewRuntimeRoleVerifier, PurviewRuntimeRoleVerifier>();
-        services.AddSingleton<PurviewTenantConnectionEvidenceValidator>();
-        services.Configure<PurviewExecutorOptions>(configuration.GetSection(PurviewExecutorOptions.SectionName));
-        services.AddHttpClient(PurviewExecutorClient.HttpClientName, client =>
-        {
-            client.Timeout = Timeout.InfiniteTimeSpan;
-        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            AllowAutoRedirect = false
-        });
-        services.AddSingleton<IPurviewExecutorClient>(serviceProvider => new PurviewExecutorClient(
-            serviceProvider.GetRequiredService<IHttpClientFactory>(),
-            serviceProvider.GetRequiredService<IOptions<PurviewExecutorOptions>>(),
-            serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
-            new Azure.Identity.ManagedIdentityCredential()));
-        services.AddSingleton<IPurviewSettingsAutomation, RemotePurviewSettingsAutomation>();
-        services.AddSingleton<IPurviewSettingsProvider>(serviceProvider =>
-            new PurviewSettingsProvider(
-                serviceProvider.GetRequiredService<IPurviewSettingsAutomation>()));
+        services.Configure<RuntimePurviewCatalogOptions>(configuration.GetSection(RuntimePurviewCatalogOptions.SectionName));
+        services.AddSingleton<IPurviewPolicyCatalogClient, RuntimePurviewCatalogClient>();
         services.AddHttpClient(nameof(PurviewGraphClient), (serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<PurviewOptions>>().Value;
@@ -66,14 +37,9 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<ILogger<PurviewPolicyClient>>(),
                 serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
                 serviceProvider.GetRequiredService<IMemoryCache>(),
-                serviceProvider.GetRequiredService<IPurviewGraphClient>(),
-                Guid.TryParse(configuration["PurviewRuntimeIdentity:ManagedIdentityPrincipalObjectId"], out var probePrincipalId)
-                    ? probePrincipalId : null));
+                serviceProvider.GetRequiredService<IPurviewGraphClient>()));
         services.AddSingleton<IPurviewPolicyClient>(serviceProvider =>
             serviceProvider.GetRequiredService<PurviewPolicyClient>());
-        services.AddSingleton<IPurviewRuntimeProbeClient>(serviceProvider =>
-            serviceProvider.GetRequiredService<PurviewPolicyClient>());
-        services.AddSingleton<IPurviewPolicyProvisioningClient, PowerShellPurviewPolicyProvisioningClient>();
 
         return services;
     }

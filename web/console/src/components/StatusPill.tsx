@@ -52,7 +52,7 @@ export function StatusPill({ value: supplied }: { value: string | null | undefin
   const value = typeof supplied === "string" && supplied.trim() ? supplied : "Unknown";
   const tone = toneByValue[value] ?? "informative";
   return (
-    <Badge appearance="filled" color={colorByTone[tone]}>
+    <Badge className="status-pill" appearance="tint" color={colorByTone[tone]}><span className="status-dot" aria-hidden="true" />
       {value === "AwaitingAdminApproval" ? "Registration required" : humanize(value)}
     </Badge>
   );

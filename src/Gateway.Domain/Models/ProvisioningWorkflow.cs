@@ -4,7 +4,6 @@ namespace Gateway.Domain.Models;
 
 public static class ProvisioningWorkflow
 {
-    public const int LegacyVersion = 1;
     public const int CurrentVersion = 3;
 
     public static IReadOnlyList<ProvisioningStepType> CurrentSteps { get; } =

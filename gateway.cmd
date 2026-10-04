@@ -5,17 +5,14 @@ set "COMMAND=%~1"
 if "%COMMAND%"=="" set "COMMAND=up"
 if not "%~1"=="" shift
 set "GATEWAY_MODE="
+if /I "%COMMAND%"=="gui" goto gui
 
-if /I "%COMMAND%"=="setup" set "GATEWAY_MODE=Setup"
+if /I "%COMMAND%"=="setup" set "GATEWAY_MODE=Init"
 if /I "%COMMAND%"=="up" set "GATEWAY_MODE=Up"
 if /I "%COMMAND%"=="init" set "GATEWAY_MODE=Init"
 if /I "%COMMAND%"=="doctor" set "GATEWAY_MODE=Doctor"
 if /I "%COMMAND%"=="plan" set "GATEWAY_MODE=Plan"
 if /I "%COMMAND%"=="apply" set "GATEWAY_MODE=Apply"
-if /I "%COMMAND%"=="resume" set "GATEWAY_MODE=Resume"
-if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"
-if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"
-if /I "%COMMAND%"=="upgrade-admin-ui" set "GATEWAY_MODE=UpgradeAdminUi"
 if /I "%COMMAND%"=="status" set "GATEWAY_MODE=Status"
 if /I "%COMMAND%"=="verify" set "GATEWAY_MODE=Verify"
 if /I "%COMMAND%"=="open" set "GATEWAY_MODE=Open"
@@ -23,13 +20,28 @@ if /I "%COMMAND%"=="diagnose" set "GATEWAY_MODE=Diagnose"
 if /I "%COMMAND%"=="help" goto help
 if /I "%COMMAND%"=="-h" goto help
 if /I "%COMMAND%"=="--help" goto help
-if /I "%GATEWAY_MODE%"=="Setup" goto parse_setup
-if /I "%GATEWAY_MODE%"=="UpgradeAdminUi" goto parse_upgrade
 if defined GATEWAY_MODE goto parse
 
 echo Unknown command. Run gateway.cmd --help for the supported surface. 1>&2
 echo. 1>&2
 goto help_error
+
+:gui
+set "GATEWAY_NO_INSTALL=1"
+call :find_pwsh
+if errorlevel 1 exit /b %errorlevel%
+if "%~1"=="" goto gui_open
+if /I "%~1"=="--no-open" if "%~2"=="" goto gui_no_open
+echo GUI accepts only --no-open. 1>&2
+exit /b 2
+
+:gui_open
+"%GATEWAY_PWSH%" -NoLogo -NoProfile -File "%~dp0bootstrap\start-setup.ps1"
+exit /b %errorlevel%
+
+:gui_no_open
+"%GATEWAY_PWSH%" -NoLogo -NoProfile -File "%~dp0bootstrap\start-setup.ps1" -NoOpen
+exit /b %errorlevel%
 
 :parse
 set "GATEWAY_ROOT=%~dp0"
@@ -192,260 +204,27 @@ if errorlevel 1 (
 )
 exit /b 0
 
-:parse_setup
-set "GATEWAY_ROOT=%~dp0"
-set "GATEWAY_NO_INSTALL=0"
-set "SETUP_NO_OPEN="
-
-:parse_setup_next
-if "%~1"=="" goto run_setup
-if /I "%~1"=="--no-open" (
-  set "SETUP_NO_OPEN=--no-open"
-  shift
-  goto parse_setup_next
-)
-if /I "%~1"=="--no-install" (
-  set "GATEWAY_NO_INSTALL=1"
-  shift
-  goto parse_setup_next
-)
-if /I "%~1"=="-h" goto help_setup
-if /I "%~1"=="--help" goto help_setup
-echo Unknown setup option. Run gateway.cmd setup --help. 1>&2
-exit /b 2
-
-:run_setup
-call :check_setup_prerequisites
-if errorlevel 1 exit /b 1
-rem %~dp0 always ends in a backslash. Keep a dot inside the quoted native
-rem argument so Windows does not interpret that backslash as escaping the quote.
-rem .NET Path.GetFullPath normalizes the resulting "\." suffix.
-dotnet run --project "%~dp0tools\Gateway.Setup\Gateway.Setup.csproj" -- --repo-root "%~dp0." %SETUP_NO_OPEN%
-exit /b %errorlevel%
-
-:check_setup_prerequisites
-set "SETUP_PREREQUISITES_READY=1"
-call :refresh_setup_tool_paths
-call :ensure_setup_pwsh
-if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
-call :ensure_setup_dotnet
-if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
-call :ensure_setup_azure_cli
-if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
-
-if "%SETUP_PREREQUISITES_READY%"=="0" (
-  if "%GATEWAY_NO_INSTALL%"=="1" (
-    echo No installation was attempted. Install or repair the listed tools, then rerun gateway.cmd setup. 1>&2
-  ) else (
-    echo Setup could not prepare every required host tool. Repair the listed tool, then rerun gateway.cmd setup. 1>&2
-  )
-  exit /b 1
-)
-exit /b 0
-
-:ensure_setup_pwsh
-call :test_setup_pwsh
-if not errorlevel 1 exit /b 0
-if "%GATEWAY_NO_INSTALL%"=="1" (
-  echo Setup requires PowerShell 7 and --no-install forbids installing it. Install: https://aka.ms/powershell-release?tag=stable 1>&2
-  exit /b 1
-)
-call :install_setup_package Microsoft.PowerShell "PowerShell 7" "https://aka.ms/powershell-release?tag=stable"
-if errorlevel 1 exit /b 1
-call :refresh_setup_tool_paths
-call :test_setup_pwsh
-if errorlevel 1 (
-  echo winget finished, but PowerShell 7 is still unavailable or incompatible. Repair: https://aka.ms/powershell-release?tag=stable 1>&2
-  exit /b 1
-)
-exit /b 0
-
-:test_setup_pwsh
-set "GATEWAY_SETUP_PWSH=pwsh.exe"
-where pwsh.exe >nul 2>nul
-if errorlevel 1 (
-  if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" (
-    set "GATEWAY_SETUP_PWSH=%ProgramFiles%\PowerShell\7\pwsh.exe"
-  ) else (
-    exit /b 1
-  )
-)
-"%GATEWAY_SETUP_PWSH%" -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -ge 7) { exit 0 }; exit 1" >nul 2>nul
-if errorlevel 1 exit /b 1
-exit /b 0
-
-:ensure_setup_dotnet
-call :check_setup_dotnet_10
-if not errorlevel 1 exit /b 0
-if "%GATEWAY_NO_INSTALL%"=="1" (
-  echo Setup requires the .NET SDK feature band 10.0.4xx from global.json and --no-install forbids installing it. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
-  exit /b 1
-)
-call :install_setup_package Microsoft.DotNet.SDK.10 ".NET SDK feature band 10.0.4xx" "https://dotnet.microsoft.com/download/dotnet/10.0"
-if errorlevel 1 exit /b 1
-call :refresh_setup_tool_paths
-call :check_setup_dotnet_10
-if errorlevel 1 (
-  echo winget finished, but the .NET SDK feature band 10.0.4xx required by global.json is still unavailable. Repair: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
-  exit /b 1
-)
-exit /b 0
-
-:check_setup_dotnet_10
-where dotnet.exe >nul 2>nul
-if errorlevel 1 exit /b 1
-set "GATEWAY_SETUP_DOTNET_VERSION="
-pushd "%GATEWAY_ROOT%." >nul 2>nul
-if errorlevel 1 exit /b 1
-for /f "delims=" %%V in ('dotnet --version 2^>nul') do set "GATEWAY_SETUP_DOTNET_VERSION=%%V"
-popd
-if not defined GATEWAY_SETUP_DOTNET_VERSION exit /b 1
-rem global.json pins 10.0.400 with latestPatch, so only the 10.0.4xx feature band is valid.
-if "%GATEWAY_SETUP_DOTNET_VERSION:~0,6%"=="10.0.4" exit /b 0
-exit /b 1
-
-:ensure_setup_azure_cli
-call :test_setup_azure_cli
-if not errorlevel 1 exit /b 0
-if "%GATEWAY_NO_INSTALL%"=="1" (
-  echo Setup requires Azure CLI and --no-install forbids installing it. Install: https://learn.microsoft.com/cli/azure/install-azure-cli-windows 1>&2
-  exit /b 1
-)
-call :install_setup_package Microsoft.AzureCLI "Azure CLI" "https://learn.microsoft.com/cli/azure/install-azure-cli-windows"
-if errorlevel 1 exit /b 1
-call :refresh_setup_tool_paths
-call :test_setup_azure_cli
-if errorlevel 1 (
-  echo winget finished, but Azure CLI is still unavailable or unusable. Repair: https://learn.microsoft.com/cli/azure/install-azure-cli-windows 1>&2
-  exit /b 1
-)
-exit /b 0
-
-:test_setup_azure_cli
-where az >nul 2>nul
-if errorlevel 1 exit /b 1
-call az version >nul 2>nul
-if errorlevel 1 exit /b 1
-exit /b 0
-
-:install_setup_package
-call :find_setup_winget
-if errorlevel 1 (
-  echo Setup cannot install %~2 because Windows Package Manager ^(winget^) is unavailable. Install it manually: %~3 1>&2
-  exit /b 1
-)
-echo Installing %~2 with winget...
-"%GATEWAY_SETUP_WINGET%" install --id %~1 --exact --source winget --accept-package-agreements --accept-source-agreements
-if errorlevel 1 (
-  echo winget could not install %~2. Install or repair it manually: %~3 1>&2
-  exit /b 1
-)
-exit /b 0
-
-:find_setup_winget
-set "GATEWAY_SETUP_WINGET=winget.exe"
-where winget.exe >nul 2>nul
-if not errorlevel 1 exit /b 0
-if exist "%LocalAppData%\Microsoft\WindowsApps\winget.exe" (
-  set "GATEWAY_SETUP_WINGET=%LocalAppData%\Microsoft\WindowsApps\winget.exe"
-  exit /b 0
-)
-exit /b 1
-
-:refresh_setup_tool_paths
-set "GATEWAY_SETUP_PROGRAM_FILES_X86=%ProgramFiles(x86)%"
-set "PATH=%PATH%;%ProgramFiles%\PowerShell\7;%ProgramFiles%\dotnet;%ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin;%ProgramW6432%\Microsoft SDKs\Azure\CLI2\wbin;%GATEWAY_SETUP_PROGRAM_FILES_X86%\Microsoft SDKs\Azure\CLI2\wbin;%LocalAppData%\Microsoft\WindowsApps;%LocalAppData%\Microsoft\WinGet\Links"
-exit /b 0
-
-:parse_upgrade
-set "GATEWAY_ROOT=%~dp0"
-set "GATEWAY_CONFIG_SET=0"
-set "GATEWAY_NONINTERACTIVE=0"
-set "GATEWAY_YES=0"
-
-:parse_upgrade_next
-if "%~1"=="" goto run_upgrade
-if /I "%~1"=="--config" goto upgrade_option_config
-if /I "%~1"=="-Config" goto upgrade_option_config
-if /I "%~1"=="--yes" (
-  set "GATEWAY_YES=1"
-  shift
-  goto parse_upgrade_next
-)
-if /I "%~1"=="-Yes" (
-  set "GATEWAY_YES=1"
-  shift
-  goto parse_upgrade_next
-)
-if /I "%~1"=="--non-interactive" (
-  set "GATEWAY_NONINTERACTIVE=1"
-  shift
-  goto parse_upgrade_next
-)
-if /I "%~1"=="-NonInteractive" (
-  set "GATEWAY_NONINTERACTIVE=1"
-  shift
-  goto parse_upgrade_next
-)
-if /I "%~1"=="-h" goto help_upgrade
-if /I "%~1"=="--help" goto help_upgrade
-echo Unknown upgrade-admin-ui option. Run gateway.cmd upgrade-admin-ui --help. 1>&2
-exit /b 2
-
-:upgrade_option_config
-if "%~2"=="" (
-  echo --config requires a path. 1>&2
-  exit /b 2
-)
-set "GATEWAY_CONFIG=%~2"
-set "GATEWAY_CONFIG_SET=1"
-shift
-shift
-goto parse_upgrade_next
-
-:run_upgrade
-set "GATEWAY_NO_INSTALL=1"
-call :find_pwsh
-if errorlevel 1 exit /b %errorlevel%
-"%GATEWAY_PWSH%" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $p=@{}; if($env:GATEWAY_CONFIG_SET -eq '1'){$p.Config=$env:GATEWAY_CONFIG}; if($env:GATEWAY_NONINTERACTIVE -eq '1'){$p.NonInteractive=$true}; if($env:GATEWAY_YES -eq '1'){$p.Yes=$true}; & (Join-Path $env:GATEWAY_ROOT 'operations\upgrade-bootstrap-admin-ui.ps1') @p; exit 0 } catch { [Console]::Error.WriteLine('Gateway Admin UI upgrade could not complete safely. Dependency details were withheld.'); exit 1 }"
-exit /b %errorlevel%
-
-:help_upgrade
-echo Usage: gateway.cmd upgrade-admin-ui --config PATH --yes [--non-interactive]
-exit /b 0
-
-:help_setup
-echo Usage: gateway.cmd setup [--no-open] [--no-install]
-exit /b 0
-
 :help
 echo A365 Custom Gateway
 echo.
 echo Usage: gateway.cmd [command] [options]
 echo.
 echo Commands:
-echo   setup       Start the temporary loopback-only Fluent setup UI
-echo   up          Guided TUI (if needed) then plan, confirm, deploy/resume, verify
-echo   init        Guided TUI wizard — writes bootstrap/config.json (do not edit JSON)
-echo   doctor      Check tools, configuration, and Azure sign-in readiness
-echo   plan        Review the exact plan for the guided configuration
+echo   setup, init Guided terminal setup for the runtime gateway
+echo   gui         Open the React graphical installer on this computer
+echo   up          Configure, review, deploy, and verify
+echo   doctor      Check runtime tools and Microsoft product sign-in
+echo   plan        Review the runtime deployment plan
 echo   apply       Apply an accepted current plan
-echo   resume      Resume an interrupted accepted plan
-echo   recover-database
-echo               Run the reviewed one-time recovery for an eligible failed database bootstrap
-echo   repair-database
-echo               Run the one-shot manual repair after both automatic database recoveries failed
-echo   upgrade-admin-ui
-echo               Build and promote only the Admin UI of a completed bootstrap deployment
-echo   status      Show checkpoint and truthful readiness status
-echo   verify      Rerun read-only deployment verification
-echo   open        Open the recorded verified Admin UI
+echo   status      Show saved checkpoints
+echo   verify      Check the runtime gateway and Console
+echo   open        Open the Console
 echo   diagnose    Write a sanitized diagnostic bundle
 echo.
 echo Options:
 echo   --config PATH
 echo   --json  --non-interactive  --yes  --force  --open  --no-install
-echo   --yes explicitly accepts the exact plan for automated plan/up/resume/recovery
+echo   --yes explicitly accepts the exact plan for automated plan/up/apply
 echo   --expected-plan-fingerprint SHA256  --event-stream-only
 echo   --diagnostic-path PATH
 echo.

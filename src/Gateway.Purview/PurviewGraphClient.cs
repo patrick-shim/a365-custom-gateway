@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Gateway.Domain.Models;
+using Gateway.Agent365;
+using Microsoft.Extensions.Options;
 
 namespace Gateway.Purview;
 
@@ -19,7 +21,7 @@ internal interface IPurviewGraphClient
         string relativePath,
         JsonObject body,
         string? ifNoneMatch,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken, PurviewInteraction? identity = null);
 }
 
 internal sealed class PurviewGraphClient : IPurviewGraphClient
@@ -27,14 +29,16 @@ internal sealed class PurviewGraphClient : IPurviewGraphClient
     internal static readonly Uri OfficialBaseAddress = new("https://graph.microsoft.com/v1.0/");
 
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IPurviewTokenProvider _tokenProvider;
+    private readonly IAgent365PurviewTokenProvider? _agentTokens;
+    private readonly string _tenantId;
 
     public PurviewGraphClient(
         IHttpClientFactory httpClientFactory,
-        IPurviewTokenProvider tokenProvider)
+        IAgent365PurviewTokenProvider? agentTokens = null, IOptions<Agent365Options>? agentOptions = null)
     {
         _httpClientFactory = httpClientFactory;
-        _tokenProvider = tokenProvider;
+        _agentTokens = agentTokens;
+        _tenantId = agentOptions?.Value.TenantId ?? "";
     }
 
     public async Task<PurviewGraphResponse> PostAsync(
@@ -42,9 +46,15 @@ internal sealed class PurviewGraphClient : IPurviewGraphClient
         string relativePath,
         JsonObject body,
         string? ifNoneMatch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, PurviewInteraction? identity = null)
     {
-        var token = await _tokenProvider.GetTokenAsync(cancellationToken);
+        Azure.Core.AccessToken token;
+        if (identity?.UseAgentIdentity != true)
+            throw new PurviewPolicyException("PURVIEW_AGENT_IDENTITY_REQUIRED", "Purview evaluation requires the individual agent identity.");
+        try { token = await (_agentTokens ?? throw new PurviewPolicyException("PURVIEW_AGENT_IDENTITY_UNAVAILABLE", "Agent runtime identity is unavailable."))
+                .GetPurviewTokenAsync(identity.AgentIdentityClientId, identity.BlueprintClientId, _tenantId, cancellationToken); }
+        catch (Agent365ObservabilityConfigurationException) { throw new PurviewPolicyException("PURVIEW_AGENT_IDENTITY_UNAVAILABLE", "The agent runtime identity or required permissions could not be verified."); }
+        catch (Agent365ObservabilityTransientException) { throw new PurviewPolicyException("PURVIEW_AGENT_TOKEN_UNAVAILABLE", "Microsoft sign-in could not return a current agent token.", isTransient: true); }
         using var request = new HttpRequestMessage(HttpMethod.Post, relativePath)
         {
             Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")

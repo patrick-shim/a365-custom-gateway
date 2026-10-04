@@ -261,7 +261,7 @@ function Assert-Agent365SeedBlueprintSurface {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)][string]$SponsorObjectId,
-        [string]$GatewayManagedIdentityPrincipalId = '',
+        [string]$GatewayWorkloadPrincipalId = '',
         [switch]$RequirePristineAuthoritySurface
     )
 
@@ -296,15 +296,16 @@ function Assert-Agent365SeedBlueprintSurface {
 
     $passwordCredentials = @(Get-Agent365RequiredProperty -InputObject $Blueprint -Name 'passwordCredentials' -Label 'Agent ID blueprint')
     if ($passwordCredentials.Count -ne 0) {
-        # Portable Compose may attach exactly one bootstrap blueprint secret for local FMI.
+        # Runtime Compose may attach exactly one bootstrap blueprint secret for local FMI.
         # Azure pristine/runtime surfaces must remain secret-free.
-        $portableSecrets = @($passwordCredentials | Where-Object {
-            [string]$_.displayName -ceq 'a365gw-bootstrap-portable-blueprint'
+        $runtimeSecrets = @($passwordCredentials | Where-Object {
+            [string]$_.displayName -ceq 'a365gw-bootstrap-runtime-blueprint'
         })
-        $portableAllowed = -not [string]::IsNullOrWhiteSpace($GatewayManagedIdentityPrincipalId) -and
+        $runtimeAllowed = -not [string]::IsNullOrWhiteSpace($GatewayWorkloadPrincipalId) -and
             -not $RequirePristineAuthoritySurface -and
-            $portableSecrets.Count -eq $passwordCredentials.Count
-        if (-not $portableAllowed) {
+            $passwordCredentials.Count -eq 1 -and
+            $runtimeSecrets.Count -eq $passwordCredentials.Count
+        if (-not $runtimeAllowed) {
             throw 'The Agent ID blueprint has an unexpected passwordCredentials authority surface.'
         }
     }
@@ -360,8 +361,8 @@ function Assert-Agent365SeedBlueprintSurface {
         $runtimeAuthorityMode = 'Pristine'
     }
     else {
-        Assert-GuidValue -Value $GatewayManagedIdentityPrincipalId -Label 'Gateway managed-identity principal ID for blueprint authority verification'
-        $gatewayPrincipalId = ([guid]$GatewayManagedIdentityPrincipalId).ToString('D')
+        Assert-GuidValue -Value $GatewayWorkloadPrincipalId -Label 'Gateway workload principal ID for blueprint authority verification'
+        $gatewayPrincipalId = ([guid]$GatewayWorkloadPrincipalId).ToString('D')
         $expectedFicName = "a365-gateway-$(([guid]$gatewayPrincipalId).ToString('N'))"
         $expectedIssuer = "https://login.microsoftonline.com/$(([guid][string]$Config.tenantId).ToString('D'))/v2.0"
         if ($fics.Count -ne 1 -or
@@ -526,7 +527,7 @@ function Ensure-Agent365SeedBlueprint {
             $blueprint = Get-Agent365BlueprintByName -DisplayName $displayName
         }
     }
-    if (-not $blueprint) { throw "Microsoft Graph accepted the create call but typed blueprint '$displayName' was not observable within the bounded readback window. Resume may reconcile the exact name; it must not repeat POST." }
+    if (-not $blueprint) { throw "Microsoft Graph accepted the create call but typed blueprint '$displayName' was not observable within the bounded readback window. Run gateway up to reconcile the exact name; it must not repeat POST." }
     return Assert-Agent365SeedBlueprintSurface `
         -Blueprint $blueprint `
         -Config $Config `

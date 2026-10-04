@@ -1,0 +1,62 @@
+# Workload overlay for runtime bootstrap (API + Worker + React Console).
+# Infra services stay in docker-compose.yml.
+# Runtime secrets/config are loaded from .env.runtime written by bootstrap apply.
+services:
+  api:
+    restart: unless-stopped
+    image: ${GATEWAY_API_IMAGE:-a365-gateway-api:dev}
+    env_file:
+      - .env.runtime
+    ports:
+      - "127.0.0.1:${GATEWAY_API_HOST_PORT:-5080}:8080"
+    volumes:
+      - ../../.bootstrap/purview-catalog:/app/purview-catalog:ro
+      - ../../.bootstrap/purview-assignments:/app/purview-assignments
+      - ../../.bootstrap/secrets/blueprint-credentials:/app/blueprint-credentials:ro
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Runtime}
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Runtime}
+      Infrastructure__Provider: Runtime
+      Agent365__RuntimeBlueprintCredentialDirectory: /app/blueprint-credentials
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+
+  worker:
+    restart: unless-stopped
+    image: ${GATEWAY_WORKER_IMAGE:-a365-gateway-worker:dev}
+    env_file:
+      - .env.runtime
+    volumes:
+      - ../../.bootstrap/secrets/blueprint-credentials:/app/blueprint-credentials
+    environment:
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Runtime}
+      Infrastructure__Provider: Runtime
+      Agent365__RuntimeBlueprintCredentialDirectory: /app/blueprint-credentials
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  console:
+    restart: unless-stopped
+    image: ${GATEWAY_CONSOLE_IMAGE:-a365-gateway-console:dev}
+    ports:
+      - "127.0.0.1:${GATEWAY_CONSOLE_HOST_PORT:-5081}:8080"
+    environment:
+      GATEWAY_API_ORIGIN: http://api:8080
+      GATEWAY_API_HOST: api
+      CONSOLE_CLIENT_ID: ${CONSOLE_CLIENT_ID}
+      CONSOLE_TENANT_ID: ${CONSOLE_TENANT_ID}
+      CONSOLE_API_SCOPE: ${CONSOLE_API_SCOPE}
+      CONSOLE_USE_MOCK: "false"
+    depends_on:
+      api:
+        condition: service_started

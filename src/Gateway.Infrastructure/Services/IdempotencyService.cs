@@ -7,7 +7,6 @@ using Gateway.Contracts;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Interfaces;
 using Gateway.Infrastructure.Persistence;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
@@ -17,9 +16,6 @@ namespace Gateway.Infrastructure.Services;
 internal sealed class IdempotencyService : IIdempotencyService
 {
     private const int DefaultRetentionDays = 7;
-    private const int ApplicationLockTimeoutMilliseconds = 30_000;
-    private const int ApplicationLockCommandTimeoutSeconds = 35;
-    private const string SqlServerProviderName = "Microsoft.EntityFrameworkCore.SqlServer";
     private const string InMemoryProviderName = "Microsoft.EntityFrameworkCore.InMemory";
     private static readonly object InMemoryScopeLocksGate = new();
     private static readonly Dictionary<string, InMemoryLockEntry> InMemoryScopeLocks =
@@ -48,44 +44,7 @@ internal sealed class IdempotencyService : IIdempotencyService
             return new PostgresDataPlaneScopeLease(_dbContext, pg, resource);
         }
 
-        if (_dbContext.Database.ProviderName != SqlServerProviderName)
-            throw new InvalidOperationException("Data-plane serialization requires SQL Server or PostgreSQL without an existing transaction.");
-
-        // A dedicated unpooled session owns only the opaque idempotency lock during I/O.
-        // Logging out releases it even after cancellation; no transaction or protection rows are held.
-        var connectionString = new SqlConnectionStringBuilder(_dbContext.Database.GetConnectionString()
-            ?? throw new InvalidOperationException("The configured SQL connection is unavailable."))
-        {
-            Pooling = false,
-            ConnectRetryCount = 0
-        };
-        var connection = new SqlConnection(connectionString.ConnectionString);
-        try
-        {
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-            command.CommandTimeout = ApplicationLockCommandTimeoutSeconds;
-            command.CommandText = """
-                DECLARE @result int;
-                EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = 'Exclusive',
-                    @LockOwner = 'Session', @LockTimeout = @timeout;
-                SELECT @result;
-                """;
-            command.Parameters.AddWithValue("@resource", CreateOpaqueResourceName(agentRegistrationId, endpoint, key));
-            command.Parameters.AddWithValue("@timeout", ApplicationLockTimeoutMilliseconds);
-            var result = Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
-            if (result < 0)
-            {
-                ct.ThrowIfCancellationRequested();
-                throw new ConflictException("The idempotency key is already being processed.", ErrorCodes.IDEMPOTENCY_CONFLICT);
-            }
-            return new SqlServerDataPlaneScopeLease(_dbContext, connection);
-        }
-        catch
-        {
-            await connection.DisposeAsync();
-            throw;
-        }
+        throw new NotSupportedException("Data-plane serialization requires PostgreSQL.");
     }
 
     public async Task<IIdempotencyScopeLease> AcquireScopeAsync(
@@ -100,8 +59,6 @@ internal sealed class IdempotencyService : IIdempotencyService
         var resourceName = CreateOpaqueResourceName(agentRegistrationId, endpoint, key);
         var providerName = _dbContext.Database.ProviderName;
 
-        if (string.Equals(providerName, SqlServerProviderName, StringComparison.Ordinal))
-            return await AcquireSqlServerScopeAsync(resourceName, ct);
 
         if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
         {
@@ -148,39 +105,33 @@ internal sealed class IdempotencyService : IIdempotencyService
         if (record is not null && record.ExpiresAtUtc > asOfUtc)
             return record;
 
-        var hasUnexpiredLegacyRecord = await _dbContext.IdempotencyRecords
-            .AnyAsync(legacy =>
-                legacy.AgentRegistrationId == null &&
-                legacy.Endpoint == endpoint &&
-                legacy.IdempotencyKey == key &&
-                legacy.ExpiresAtUtc > asOfUtc,
-                ct);
-
-        if (hasUnexpiredLegacyRecord)
-        {
-            throw new ConflictException(
-                "The idempotency key is reserved by a legacy replay record whose registration ownership cannot be verified. Retry with a new key.",
-                ErrorCodes.IDEMPOTENCY_CONFLICT);
-        }
-
         return null;
     }
 
-    public Task<IIdempotencyScopeLease> AcquireScopeInExistingTransactionAsync(
+    public async Task<IIdempotencyScopeLease> AcquireScopeInExistingTransactionAsync(
         Guid agentRegistrationId, string endpoint, string key, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         if (_dbContext.Database.ProviderName == InMemoryProviderName)
-            return AcquireScopeAsync(agentRegistrationId, endpoint, key, ct);
-        if (_dbContext.Database.ProviderName != SqlServerProviderName || _dbContext.Database.CurrentTransaction is null)
+            return await AcquireScopeAsync(agentRegistrationId, endpoint, key, ct);
+        if (!PostgresAdvisoryLock.IsNpgsql(_dbContext) || _dbContext.Database.CurrentTransaction is null)
             throw new InvalidOperationException("A protection mutation transaction must already own this feature update.");
-        return AcquireSqlServerScopeAsync(CreateOpaqueResourceName(agentRegistrationId, endpoint, key), ct, joinExisting: true);
+        var (k1, k2) = PostgresAdvisoryLock.ToKeyPair(CreateOpaqueResourceName(agentRegistrationId, endpoint, key));
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({k1}, {k2})", ct);
+        return new ExistingTransactionLease();
+    }
+
+    private sealed class ExistingTransactionLease : IIdempotencyScopeLease
+    {
+        public Task CompleteAsync(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.CompletedTask; }
+        public Task BeginCommitAsync(CancellationToken ct) => CompleteAsync(ct);
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     public async Task SaveAsync(IdempotencyRecord record, CancellationToken ct)
     {
-        if (record.AgentRegistrationId is null)
+        if (record.AgentRegistrationId == Guid.Empty)
             throw new ArgumentException("New idempotency records require registration scope.", nameof(record));
 
         record.ExpiresAtUtc = await ResolveExpirationUtcAsync(record.CreatedAtUtc, ct);
@@ -238,80 +189,6 @@ internal sealed class IdempotencyService : IIdempotencyService
         string.Equals(first.Endpoint, second.Endpoint, StringComparison.Ordinal) &&
         string.Equals(first.IdempotencyKey, second.IdempotencyKey, StringComparison.Ordinal);
 
-    private async Task<IIdempotencyScopeLease> AcquireSqlServerScopeAsync(
-        string resourceName,
-        CancellationToken ct,
-        bool joinExisting = false)
-    {
-        if (_dbContext.Database.CurrentTransaction is not null && !joinExisting)
-        {
-            throw new InvalidOperationException(
-                "The idempotency scope must own the database transaction that protects its application lock.");
-        }
-
-        var transaction = joinExisting
-            ? _dbContext.Database.CurrentTransaction!
-            : await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-
-        try
-        {
-            await using var command = _dbContext.Database.GetDbConnection().CreateCommand();
-            command.Transaction = transaction.GetDbTransaction();
-            command.CommandTimeout = ApplicationLockCommandTimeoutSeconds;
-            command.CommandText =
-                "DECLARE @result int; " +
-                "EXEC @result = sys.sp_getapplock " +
-                "@Resource = @resource, " +
-                "@LockMode = 'Exclusive', " +
-                "@LockOwner = 'Transaction', " +
-                "@LockTimeout = @timeout; " +
-                "SELECT @result;";
-
-            var resourceParameter = command.CreateParameter();
-            resourceParameter.ParameterName = "@resource";
-            resourceParameter.DbType = DbType.String;
-            resourceParameter.Size = 255;
-            resourceParameter.Value = resourceName;
-            command.Parameters.Add(resourceParameter);
-
-            var timeoutParameter = command.CreateParameter();
-            timeoutParameter.ParameterName = "@timeout";
-            timeoutParameter.DbType = DbType.Int32;
-            timeoutParameter.Value = ApplicationLockTimeoutMilliseconds;
-            command.Parameters.Add(timeoutParameter);
-
-            var resultValue = await command.ExecuteScalarAsync(ct);
-            var result = Convert.ToInt32(resultValue, CultureInfo.InvariantCulture);
-            if (result < 0)
-            {
-                if (result == -2)
-                    ct.ThrowIfCancellationRequested();
-
-                throw new ConflictException(
-                    "The idempotency key is already being processed and could not be serialized within the bounded wait. Retry the same request.",
-                    ErrorCodes.IDEMPOTENCY_CONFLICT);
-            }
-
-            return new SqlServerIdempotencyScopeLease(transaction, ownsTransaction: !joinExisting);
-        }
-        catch
-        {
-            if (joinExisting)
-                throw;
-            try
-            {
-                await transaction.RollbackAsync(CancellationToken.None);
-            }
-            catch (InvalidOperationException)
-            {
-                // The transaction may already have completed while cancellation was observed.
-            }
-
-            await transaction.DisposeAsync();
-            throw;
-        }
-    }
-
     private static string CreateOpaqueResourceName(
         Guid agentRegistrationId,
         string endpoint,
@@ -354,66 +231,6 @@ internal sealed class IdempotencyService : IIdempotencyService
         }
     }
 
-    private sealed class SqlServerIdempotencyScopeLease : IIdempotencyScopeLease
-    {
-        private readonly IDbContextTransaction _transaction;
-        private bool _completed;
-        private bool _disposed;
-        private readonly bool _ownsTransaction;
-
-        public SqlServerIdempotencyScopeLease(IDbContextTransaction transaction, bool ownsTransaction = true)
-        {
-            _transaction = transaction;
-            _ownsTransaction = ownsTransaction;
-        }
-
-        public async Task CompleteAsync(CancellationToken ct)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_completed)
-                return;
-
-            if (_ownsTransaction)
-                await _transaction.CommitAsync(ct);
-            _completed = true;
-        }
-
-        public Task BeginCommitAsync(CancellationToken ct)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_disposed)
-                return;
-
-            _disposed = true;
-            if (!_ownsTransaction)
-                return;
-            try
-            {
-                if (!_completed)
-                {
-                    try
-                    {
-                        await _transaction.RollbackAsync(CancellationToken.None);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // A failed/cancelled commit may already have completed the transaction.
-                    }
-                }
-            }
-            finally
-            {
-                await _transaction.DisposeAsync();
-            }
-        }
-    }
-
     private sealed class InMemoryIdempotencyScopeLease : IIdempotencyScopeLease
     {
         private readonly string _resourceName;
@@ -453,66 +270,6 @@ internal sealed class IdempotencyService : IIdempotencyService
     {
         public SemaphoreSlim Semaphore { get; } = new(1, 1);
         public int ReferenceCount { get; set; }
-    }
-
-    private sealed class SqlServerDataPlaneScopeLease(GatewayDbContext dbContext, SqlConnection lockConnection) : IIdempotencyScopeLease
-    {
-        private IDbContextTransaction? _transaction;
-        private bool _completed;
-        private bool _disposed;
-
-        public async Task BeginCommitAsync(CancellationToken ct)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_transaction is null)
-                _transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-        }
-
-        public async Task CompleteAsync(CancellationToken ct)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_completed)
-                return;
-            if (_transaction is null)
-                throw new InvalidOperationException("The data-plane commit phase has not started.");
-            await _transaction.CommitAsync(ct);
-            _completed = true;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            try
-            {
-                if (_transaction is not null)
-                {
-                    try
-                    {
-                        if (!_completed)
-                        {
-                            try
-                            {
-                                await _transaction.RollbackAsync(CancellationToken.None);
-                            }
-                            catch (InvalidOperationException)
-                            {
-                                // A cancelled commit may already have completed.
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        await _transaction.DisposeAsync();
-                    }
-                }
-            }
-            finally
-            {
-                await lockConnection.DisposeAsync();
-            }
-        }
     }
 
     private sealed class PostgresIdempotencyScopeLease(
@@ -570,7 +327,9 @@ internal sealed class IdempotencyService : IIdempotencyService
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_transaction is null)
-                _transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+                // PostgreSQL row locks cannot protect missing policy rows. Serializable
+                // also protects predicate reads while the evaluation/receipt commits.
+                _transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         }
 
         public async Task CompleteAsync(CancellationToken ct)

@@ -22,8 +22,7 @@ internal sealed class IdempotencyRecordConfiguration : IEntityTypeConfiguration<
             e.Endpoint,
             e.IdempotencyKey
         })
-            .IsUnique()
-            .HasFilter("[AgentRegistrationId] IS NOT NULL");
+            .IsUnique();
         builder.HasIndex(e => e.ExpiresAtUtc);
 
         builder.HasOne(e => e.AgentRegistration)

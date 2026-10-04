@@ -5,19 +5,19 @@ namespace Gateway.Infrastructure;
 public static class InfrastructureProvider
 {
     public const string SectionName = "Infrastructure";
-    public const string Azure = "Azure";
-    public const string Portable = "Portable";
+    public const string Runtime = "Runtime";
 
     public static string Resolve(IConfiguration configuration)
     {
+        if (configuration.GetValue<bool>("DatabaseAttestation:Enabled") ||
+            configuration.GetSection("MaintenanceCutover").Exists() ||
+            configuration.GetSection("BootstrapCapabilities:Preparation").Exists())
+            throw new InvalidOperationException("Azure database upgrade and capability-preparation configuration is retired. Use runtime bootstrap.");
         var value = configuration[$"{SectionName}:Provider"]
             ?? configuration["INFRASTRUCTURE_PROVIDER"]
-            ?? Azure;
-        return string.Equals(value, Portable, StringComparison.OrdinalIgnoreCase)
-            ? Portable
-            : Azure;
+            ?? Runtime;
+        if (string.Equals(value, Runtime, StringComparison.OrdinalIgnoreCase)) return Runtime;
+        throw new InvalidOperationException("Infrastructure:Provider must be Runtime. Azure hosting has been retired.");
     }
 
-    public static bool IsPortable(IConfiguration configuration) =>
-        Resolve(configuration) == Portable;
 }

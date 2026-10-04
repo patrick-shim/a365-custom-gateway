@@ -7,16 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Gateway.ObservabilityRuntime.Tests" />
-    <InternalsVisibleTo Include="Gateway.Purview.Executor" />
-    <InternalsVisibleTo Include="Gateway.ArchitectureTests" />
-    <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
+    <InternalsVisibleTo Include="Gateway.RuntimeInfrastructure.Tests" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.Identity" Version="1.14.2" Aliases="AzureIdentity" />
-    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.18.3" />
-    <PackageReference Include="Azure.Security.KeyVault.Secrets" Version="4.7.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
   </ItemGroup>
@@ -29,10 +23,5 @@
     <ProjectReference Include="..\Gateway.Observability\Gateway.Observability.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="Automation\Verify-PurviewTenantConnection.ps1">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
 
 </Project>

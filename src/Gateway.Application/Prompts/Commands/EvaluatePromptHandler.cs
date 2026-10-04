@@ -25,6 +25,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EvaluatePromptHandler> _logger;
     private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
+    private readonly PromptShieldTelemetry _promptShieldTelemetry;
 
     public EvaluatePromptHandler(
         IAgentRepository agentRepository,
@@ -36,6 +37,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         IUnitOfWork unitOfWork,
         TimeProvider timeProvider,
         ILogger<EvaluatePromptHandler> logger,
+        PromptShieldTelemetry promptShieldTelemetry,
         ProtectionEffectiveFeatureEvaluator? protectionFeatures = null)
     {
         _agentRepository = agentRepository;
@@ -48,6 +50,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         _timeProvider = timeProvider;
         _logger = logger;
         _protectionFeatures = protectionFeatures;
+        _promptShieldTelemetry = promptShieldTelemetry;
     }
 
     public async Task<PromptEvaluationResultDto> Handle(EvaluatePromptCommand request, CancellationToken cancellationToken)
@@ -207,6 +210,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             ExpiresAtUtc = expiresAtUtc
         };
         await _promptEvaluationRepository.AddAsync(record, cancellationToken);
+        await _promptShieldTelemetry.EnqueueBlockedAsync(agent, record, cancellationToken);
         await _auditEventRepository.AddAsync(new AuditEvent
         {
             Id = Guid.NewGuid(),
@@ -333,7 +337,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             agent.Name,
             request.OccurredAtUtc,
             policyMode.ToExecutionMode(),
-            correlationId);
+            correlationId, agent.PurviewPolicySelectionMode == "ExistingPolicy");
         try
         {
             var decision = (await _purviewPolicyClient.EvaluatePromptAsync(interaction, cancellationToken)).Decision;

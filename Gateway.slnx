@@ -1,0 +1,28 @@
+<Solution>
+  <Folder Name="/Runtime/">
+    <Project Path="src/Gateway.Agent365/Gateway.Agent365.csproj" />
+    <Project Path="src/Gateway.Api/Gateway.Api.csproj" />
+    <Project Path="src/Gateway.Application/Gateway.Application.csproj" />
+    <Project Path="src/Gateway.ContentSafety/Gateway.ContentSafety.csproj" />
+    <Project Path="src/Gateway.Contracts/Gateway.Contracts.csproj" />
+    <Project Path="src/Gateway.Domain/Gateway.Domain.csproj" />
+    <Project Path="src/Gateway.Infrastructure/Gateway.Infrastructure.csproj" />
+    <Project Path="src/Gateway.Observability/Gateway.Observability.csproj" />
+    <Project Path="src/Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
+    <Project Path="src/Gateway.Purview/Gateway.Purview.csproj" />
+    <Project Path="src/Gateway.Purview.CatalogHost/Gateway.Purview.CatalogHost.csproj" />
+  </Folder>
+  <Folder Name="/Samples/">
+    <Project Path="src/ExternalAgent.Sample/ExternalAgent.Sample.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="tests/Gateway.Setup.Tests/Gateway.Setup.Tests.csproj" />
+    <Project Path="tests/Gateway.Agent365.RegressionTests/Gateway.Agent365.RegressionTests.csproj" />
+    <Project Path="tests/Gateway.RuntimeDataPlane.Tests/Gateway.RuntimeDataPlane.Tests.csproj" />
+    <Project Path="tests/Gateway.RuntimeInfrastructure.Tests/Gateway.RuntimeInfrastructure.Tests.csproj" />
+    <Project Path="tests/Gateway.Purview.Consumption.Tests/Gateway.Purview.Consumption.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Setup/">
+    <Project Path="tools/Gateway.Setup/Gateway.Setup.csproj" />
+  </Folder>
+</Solution>

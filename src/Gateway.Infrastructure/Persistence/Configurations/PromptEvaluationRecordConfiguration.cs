@@ -10,13 +10,13 @@ internal sealed class PromptEvaluationRecordConfiguration : IEntityTypeConfigura
     {
         builder.ToTable("PromptEvaluationRecords", table => table.HasCheckConstraint(
             "CK_PromptEvaluationRecords_ProtectionBinding",
-            "([ProtectionRevision] IS NULL AND [ProtectionContextHash] IS NULL AND [PromptShieldRequired] IS NULL AND [EvaluatedPurviewPolicyMode] IS NULL) OR " +
-            "([ProtectionRevision] IS NOT NULL AND [ProtectionRevision] <> '00000000-0000-0000-0000-000000000000' AND " +
-            "[ProtectionContextHash] IS NOT NULL AND DATALENGTH([ProtectionContextHash]) = 64 AND " +
-            "[ProtectionContextHash] COLLATE Latin1_General_100_BIN2 NOT LIKE '%[^0-9a-f]%' AND [PromptShieldRequired] IS NOT NULL AND " +
-            "[EvaluatedPurviewPolicyMode] IS NOT NULL AND [EvaluatedPurviewPolicyMode] IN (N'Disabled', N'SimulationWithTips', N'SimulationWithoutTips', N'Enforce') AND " +
-            "([Outcome] <> N'Allowed' OR (([PromptShieldRequired] = 0 OR [PromptShieldDecision] = N'Allowed') AND " +
-            "([EvaluatedPurviewPolicyMode] <> N'Enforce' OR [PurviewDecision] = N'Allowed'))))"));
+            "(\"ProtectionRevision\" IS NULL AND \"ProtectionContextHash\" IS NULL AND \"PromptShieldRequired\" IS NULL AND \"EvaluatedPurviewPolicyMode\" IS NULL) OR " +
+            "(\"ProtectionRevision\" IS NOT NULL AND \"ProtectionRevision\" <> '00000000-0000-0000-0000-000000000000' AND " +
+            "\"ProtectionContextHash\" IS NOT NULL AND octet_length(\"ProtectionContextHash\") = 64 AND " +
+            "\"ProtectionContextHash\" COLLATE \"C\" !~ '[^0-9a-f]' AND \"PromptShieldRequired\" IS NOT NULL AND " +
+            "\"EvaluatedPurviewPolicyMode\" IS NOT NULL AND \"EvaluatedPurviewPolicyMode\" IN ('Disabled', 'SimulationWithTips', 'SimulationWithoutTips', 'Enforce') AND " +
+            "(\"Outcome\" <> 'Allowed' OR ((\"PromptShieldRequired\" = FALSE OR \"PromptShieldDecision\" = 'Allowed') AND " +
+            "(\"EvaluatedPurviewPolicyMode\" <> 'Enforce' OR \"PurviewDecision\" = 'Allowed'))))"));
         builder.HasKey(record => record.Id);
         builder.Property(record => record.ExternalInteractionId).HasMaxLength(256).IsRequired();
         builder.Property(record => record.TenantUserObjectId).HasMaxLength(36).IsRequired();

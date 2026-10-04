@@ -10,7 +10,7 @@ public class PurviewDecision
     public PurviewDecisionType Decision { get; set; }
     public string? PolicyAction { get; set; }
     public PurviewExecutionMode? ExecutionMode { get; set; }
-    public string? ProtectionScopeId { get; set; }
+    public string? ProtectionScopeState { get; set; }
     public string? TenantUserObjectId { get; set; }
     public DateTime EvaluatedAtUtc { get; set; }
 

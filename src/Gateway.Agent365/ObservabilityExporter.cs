@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.Enums;
 using Gateway.Domain.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -62,6 +63,9 @@ public sealed class ObservabilityExporter : IObservabilityExporter
             request.BlueprintClientId,
             "InvalidBlueprintClientId");
         var operation = NormalizeOperation(request.SpanType);
+        if (request.PromptShieldDecision is not null &&
+            (request.PromptShieldDecision != PromptShieldDecisionType.Blocked || operation != "execute_tool"))
+            throw new Agent365ObservabilityConfigurationException("InvalidPromptShieldTelemetry");
 
         if (!Guid.TryParse(request.TenantUserObjectId, out var userObjectId)
             || userObjectId == Guid.Empty)
@@ -108,7 +112,10 @@ public sealed class ObservabilityExporter : IObservabilityExporter
                 kind: 1,
                 startTime,
                 endTime,
-                rootAttributes)
+                rootAttributes,
+                request.PromptShieldDecision == PromptShieldDecisionType.Blocked
+                    ? "Gateway standalone Prompt Shields blocked this prompt before model execution."
+                    : null)
         };
 
         if (operation != "invoke_agent")
@@ -256,8 +263,11 @@ public sealed class ObservabilityExporter : IObservabilityExporter
                 attributes["gen_ai.output.messages"] = RedactedOutput;
                 break;
             case "execute_tool":
-                attributes["gen_ai.tool.name"] = "external-tool";
-                attributes["gen_ai.tool.type"] = "function";
+                var shield = request.PromptShieldDecision == PromptShieldDecisionType.Blocked;
+                attributes["gen_ai.tool.name"] = shield ? "azure-ai-content-safety.prompt-shields" : "external-tool";
+                attributes["gen_ai.tool.type"] = shield ? "API" : "function";
+                if (shield)
+                    attributes["gen_ai.tool.description"] = $"Gateway standalone Prompt Shields verdict: Blocked. Evaluation ID: {request.EventId:D}.";
                 attributes["gen_ai.tool.call.id"] = request.EventId.ToString("D");
                 attributes["gen_ai.tool.call.arguments"] = RedactedToolData;
                 attributes["gen_ai.tool.call.result"] = RedactedToolData;
@@ -295,7 +305,8 @@ public sealed class ObservabilityExporter : IObservabilityExporter
         int kind,
         DateTime startTime,
         DateTime endTime,
-        IReadOnlyDictionary<string, string> attributes)
+        IReadOnlyDictionary<string, string> attributes,
+        string? errorMessage = null)
     {
         return new OtlpSpanPayload(
             traceId,
@@ -305,7 +316,7 @@ public sealed class ObservabilityExporter : IObservabilityExporter
             kind,
             ToUnixNanoseconds(startTime),
             ToUnixNanoseconds(endTime),
-            new OtlpStatusPayload(1),
+            new OtlpStatusPayload(errorMessage is null ? 1 : 2, errorMessage),
             ToOtlpAttributes(attributes));
     }
 
@@ -583,5 +594,7 @@ public sealed class ObservabilityExporter : IObservabilityExporter
         OtlpStatusPayload Status,
         object[] Attributes);
 
-    private sealed record OtlpStatusPayload(int Code);
+    private sealed record OtlpStatusPayload(int Code,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        string? Message = null);
 }

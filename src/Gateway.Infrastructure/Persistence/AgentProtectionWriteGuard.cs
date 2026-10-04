@@ -13,8 +13,7 @@ internal sealed class AgentProtectionWriteGuard
         nameof(AgentRegistration.Agent365AgentId), nameof(AgentRegistration.BlueprintId),
         nameof(AgentRegistration.Agent365InstanceId), nameof(AgentRegistration.ExternalClientId),
         nameof(AgentRegistration.AgentIdentityObjectId), nameof(AgentRegistration.BlueprintObjectId),
-        nameof(AgentRegistration.RequestedPurviewPolicyMode),
-        nameof(AgentRegistration.RequestedPurviewPolicyProfileId), nameof(AgentRegistration.PurviewPolicyProfileId)
+        nameof(AgentRegistration.RequestedPurviewPolicyMode), nameof(AgentRegistration.PurviewPolicySelectionMode),
     ];
     private static readonly string[] FeatureSecurityFields =
     [
@@ -42,7 +41,7 @@ internal sealed class AgentProtectionWriteGuard
     }
 
     public bool RequiresSqlTransaction =>
-        _ids.Length > 0 && (_db.Database.IsSqlServer() || PostgresAdvisoryLock.IsNpgsql(_db));
+        _ids.Length > 0 && PostgresAdvisoryLock.IsNpgsql(_db);
 
     public void Prepare()
     {
@@ -68,17 +67,6 @@ internal sealed class AgentProtectionWriteGuard
 
     private IQueryable<AgentRegistration> AgentQuery(Guid id)
     {
-        if (_db.Database.IsSqlServer())
-        {
-            if (_db.Database.CurrentTransaction is null)
-                throw new InvalidOperationException("Agent writes require a transaction for registration-first locking.");
-            // X, not U: U is compatible with a receipt reader's S lock and can
-            // deadlock during conversion after EF takes a feature-row X lock.
-            return _db.AgentRegistrations.FromSqlInterpolated(
-                $"SELECT * FROM dbo.AgentRegistrations WITH (XLOCK, HOLDLOCK) WHERE Id = {id}")
-                .IgnoreQueryFilters().AsNoTracking();
-        }
-
         if (PostgresAdvisoryLock.IsNpgsql(_db))
         {
             if (_db.Database.CurrentTransaction is null)

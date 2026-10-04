@@ -78,7 +78,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
 
         var purviewPolicyMode = _protectionFeatures is null
             ? agent.FeatureConfiguration.PurviewEnabled
-                ? agent.RequestedPurviewPolicyMode ?? PurviewPolicyModeCompatibility.FromLegacy(agent.FeatureConfiguration.PurviewMode ?? PurviewMode.Enforce)
+                ? agent.RequestedPurviewPolicyMode ?? PurviewPolicyModeMapping.FromRuntimeMode(agent.FeatureConfiguration.PurviewMode ?? PurviewMode.Enforce)
                 : PurviewPolicyMode.Disabled
             : await _protectionFeatures.GetRuntimePolicyModeAsync(agent, ct);
         if (purviewPolicyMode == PurviewPolicyMode.Enforce)
@@ -220,7 +220,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                     agent.Name,
                     request.OccurredAtUtc,
                     purviewPolicyMode.ToExecutionMode(),
-                    correlationId);
+                    correlationId, agent.PurviewPolicySelectionMode == "ExistingPolicy");
 
                 try
                 {
@@ -306,9 +306,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                     Decision = evaluation.Decision,
                     PolicyAction = evaluation.PolicyAction,
                     ExecutionMode = purviewPolicyMode.ToExecutionMode(),
-                    // The legacy column name is retained for schema compatibility;
-                    // Graph returns a protectionScopeState, not a scope ID.
-                    ProtectionScopeId = evaluation.ProtectionScopeState,
+                    ProtectionScopeState = evaluation.ProtectionScopeState,
                     TenantUserObjectId = request.UserContext!.TenantUserObjectId,
                     EvaluatedAtUtc = DateTime.UtcNow
                 };

@@ -40,9 +40,8 @@ public static class DependencyInjection
                 // candidate for sampling: record every span regardless of parent.
                 .SetSampler(new AlwaysOnSampler())
                 .AddSource(GatewayActivitySource.Name)
-                // Service Bus and Blob calls are instrumented by the Azure SDK's own
-                // activity sources. Without subscribing to them the provisioning
-                // worker's queue and storage dependencies emit nothing at all.
+                // Retain Azure SDK spans for Microsoft product authentication,
+                // including Azure.Identity calls used by Agent 365 and Content Safety.
                 .AddSource("Azure.*")
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()

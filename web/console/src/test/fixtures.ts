@@ -34,25 +34,6 @@ export const blueprints = {
       displayName: "Incompatible blueprint", isAgent365Compatible: false, agent365CompatibilityIssue: "MissingRequiredManagerApplications" },
   ],
 };
-export const failedConnection = {
-  id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", tenantId, status: "VerificationFailed",
-  authorityKind: "VerificationFailed", authorityApplicationId: null, authorityServicePrincipalObjectId: null,
-  activeInventoryGenerationId: null, authorizedAtUtc: null, expiresAtUtc: null,
-  lastVerifiedAtUtc: null, lastFailureCode: "PURVIEW_CONNECTION_PROVIDER_UNVERIFIED", rowVersion,
-};
-export const connected = {
-  ...failedConnection, status: "Connected", authorityKind: "Application",
-  authorityApplicationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-  authorityServicePrincipalObjectId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-  activeInventoryGenerationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-  authorizedAtUtc: "2026-10-01T13:00:00", lastVerifiedAtUtc: "2026-10-01T13:00:00",
-  expiresAtUtc: "2099-01-01T00:00:00Z", lastFailureCode: null,
-};
-export const inventory = {
-  generationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", tenantId,
-  retrievedAtUtc: "2026-10-01T13:00:00Z", expiresAtUtc: "2099-01-01T00:00:00Z", isExpired: false,
-  items: [{ id: "ffffffff-ffff-4fff-8fff-ffffffffffff", exactName: "Credit Card Number", publisher: "Microsoft Corporation" }],
-};
 export const systemConfig = {
   provisioningMode: "Automatic", provisioningExecutionEnabled: true, defaultObservabilityMode: "Agent365",
   defaultPromptShieldEnabled: false, promptShieldAvailable: true, rowVersion,
@@ -69,19 +50,6 @@ export const registration = {
 export const credentials = {
   agentId, items: [{ keyId: "01234567-0123-4123-8123-012345678901",
     createdAtUtc: agent.createdAtUtc, expiresAtUtc: "2099-01-01T00:00:00Z", revokedAtUtc: null }],
-};
-export const review = {
-  reviewTokenId: operationId, reviewToken: "test-only-review", reviewedPayloadHash: "test-hash",
-  expiresAtUtc: "2099-01-01T00:00:00Z",
-  review: { tenantId, operationType: "VerifyPurviewTenantConnection", targetIdentifier: tenantId,
-    targetType: "PurviewTenantConnection", verificationMode: "Gateway",
-    readinessDisclaimer: "The Gateway reads Purview using the installed certificate authority. Readback is required." },
-};
-export const operation = {
-  operation: { id: operationId, type: "VerifyPurviewTenantConnection", tenantId, targetType: "PurviewTenantConnection",
-    status: "Completed", failureCode: null, requiredAction: null,
-    requiresManualIntervention: false, correlationId: operationId, blockers: [],
-    steps: [{ step: "RecordExactReadback", status: "Completed", failureCode: null }] },
 };
 export const approvalAgent = {
   ...agent, status: "AwaitingAdminApproval",
@@ -134,21 +102,14 @@ export function mockServer() {
       operationId, agentId, agent365RegistrationId: "12345678-1234-4234-8234-123456789012", status: "VerificationQueued",
     })],
     ["GET /api/v1/agent-identity-blueprints", () => blueprints],
-    ["GET /api/v1/protection/purview/connection", () => ({ connection: failedConnection })],
-    ["GET /api/v1/protection/purview/sensitive-information-types", () => inventory],
     ["GET /api/v1/protection/purview/dlp-profiles", () => ({ items: [] })],
+    ["GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [] })],
+    [`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: false, allowObservedAtUtc: null, blockObservedAtUtc: null, items: [] })],
     ["GET /api/v1/system/config", () => systemConfig],
-    ["GET /api/v1/protection/capabilities", () => ({ items: [
-      { id: blueprintObjectId, capability: "PromptShields", status: "Installed", lastFailureCode: null, lastReadbackAtUtc: agent.createdAtUtc },
-    ] })],
     ["POST /api/v1/agents", () => response(registration, 202)],
     [`GET /api/v1/agents/${agentId}/credentials`, () => credentials],
     [`POST /api/v1/agents/${agentId}/credentials`, () => response({ agentId, externalAgentId: agent.externalAgentId, gatewayCredential: registration.gatewayCredential }, 201)],
     [`DELETE /api/v1/agents/${agentId}/credentials/${credentials.items[0].keyId}`, () => ({ agentId, alreadyRevoked: false })],
-    ["POST /api/v1/protection/purview/connection-operations:review", () => review],
-    ["POST /api/v1/protection/operation-reviews:confirm", () => ({ confirmationTokenId: operationId, confirmationToken: "test-only-confirmation" })],
-    ["POST /api/v1/protection/purview/connection-operations", () => response({ operationId, status: "Pending", correlationId: operationId }, 202)],
-    [`GET /api/v1/protection/operations/${operationId}`, () => operation],
   ]);
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), "https://console.test");

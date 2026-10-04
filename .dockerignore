@@ -6,3 +6,9 @@
 .git/
 .bootstrap/
 .agent-runtime/
+.maintenance/
+.playwright-mcp/
+**/node_modules/
+web/console/dist/
+**/.env
+**/.env.*

@@ -14,18 +14,15 @@ public sealed class PromptShieldClient : IPromptShieldClient
     private readonly HttpClient _httpClient;
     private readonly IPromptShieldTokenProvider _tokenProvider;
     private readonly PromptShieldOptions _options;
-    private readonly BootstrapPromptShieldRuntimeBinding _runtimeBinding;
 
     internal PromptShieldClient(
         HttpClient httpClient,
         IPromptShieldTokenProvider tokenProvider,
-        IOptions<PromptShieldOptions> options,
-        BootstrapPromptShieldRuntimeBinding runtimeBinding)
+        IOptions<PromptShieldOptions> options)
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
         _options = options.Value;
-        _runtimeBinding = runtimeBinding;
     }
 
     public bool IsEnabled => _options.Enabled;
@@ -60,13 +57,7 @@ public sealed class PromptShieldClient : IPromptShieldClient
 
         try
         {
-            if (!_options.UsesPortableAuth)
-            {
-                _runtimeBinding.EnsureConfigurationExact(
-                    _options,
-                    _httpClient.BaseAddress);
-            }
-            else if (_httpClient.BaseAddress is not null &&
+            if (_httpClient.BaseAddress is not null &&
                      !string.Equals(
                          _httpClient.BaseAddress.AbsoluteUri.TrimEnd('/') + "/",
                          (_options.Endpoint.EndsWith("/", StringComparison.Ordinal)
@@ -80,8 +71,6 @@ public sealed class PromptShieldClient : IPromptShieldClient
             }
 
             var token = await _tokenProvider.GetTokenAsync(cancellationToken);
-            if (!_options.UsesPortableAuth)
-                _runtimeBinding.EnsureTokenIdentity(token);
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,

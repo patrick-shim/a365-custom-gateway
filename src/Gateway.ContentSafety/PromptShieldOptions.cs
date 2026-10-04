@@ -3,7 +3,6 @@ namespace Gateway.ContentSafety;
 public sealed class PromptShieldOptions
 {
     public const string SectionName = "PromptShield";
-    public const string AuthModeManagedIdentity = "ManagedIdentity";
     public const string AuthModeApiKey = "ApiKey";
     public const string AuthModeClientSecret = "ClientSecret";
 
@@ -12,12 +11,11 @@ public sealed class PromptShieldOptions
     public string ApiVersion { get; set; } = "2024-09-01";
     public int RequestTimeoutSeconds { get; set; } = 10;
     public int ReceiptLifetimeSeconds { get; set; } = 300;
-    public string? ManagedIdentityClientId { get; set; }
 
     /// <summary>
-    /// ManagedIdentity (Azure legacy), ApiKey, or ClientSecret (portable compose).
+    /// ApiKey or ClientSecret authentication.
     /// </summary>
-    public string AuthMode { get; set; } = AuthModeManagedIdentity;
+    public string AuthMode { get; set; } = AuthModeClientSecret;
 
     /// <summary>
     /// Azure AI Content Safety subscription key used when AuthMode is ApiKey.
@@ -25,7 +23,7 @@ public sealed class PromptShieldOptions
     public string? ApiKey { get; set; }
 
     /// <summary>
-    /// Portable workload app credentials when AuthMode is ClientSecret.
+    /// Runtime workload app credentials when AuthMode is ClientSecret.
     /// </summary>
     public string? TenantId { get; set; }
     public string? ClientId { get; set; }
@@ -42,5 +40,4 @@ public sealed class PromptShieldOptions
     public bool UsesClientSecret =>
         string.Equals(AuthMode, AuthModeClientSecret, StringComparison.OrdinalIgnoreCase);
 
-    public bool UsesPortableAuth => UsesApiKey || UsesClientSecret;
 }

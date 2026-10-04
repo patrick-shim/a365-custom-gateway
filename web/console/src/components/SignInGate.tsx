@@ -9,7 +9,7 @@ const useStyles = makeStyles({
     minHeight: "100vh",
     display: "grid",
     placeItems: "center",
-    backgroundColor: tokens.colorNeutralBackground2,
+    background: "radial-gradient(ellipse at top, #244b7a, #101e34 75%)",
   },
   card: {
     display: "flex",
@@ -20,7 +20,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     borderRadius: tokens.borderRadiusXLarge,
     boxShadow: tokens.shadow16,
-    maxWidth: "380px",
+    maxWidth: "440px",
+    width: "calc(100% - 40px)",
+    border: "1px solid #ffffff30",
     textAlign: "center",
   },
   mark: {

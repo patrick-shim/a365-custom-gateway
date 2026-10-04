@@ -14,4 +14,5 @@ public sealed record ObservabilityExportRequest(
     string? ModelProvider = null,
     string? ModelName = null,
     string? AgentIdentityClientId = null,
-    string? BlueprintClientId = null);
+    string? BlueprintClientId = null,
+    Enums.PromptShieldDecisionType? PromptShieldDecision = null);

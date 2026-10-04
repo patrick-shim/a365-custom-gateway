@@ -9,9 +9,9 @@ import { AppShell } from "./components/AppShell";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { satisfyApiClaimsChallenge } from "./auth/msal";
 import {
-  agent, agentId, blueprintObjectId, connected, credentials, features, mockServer,
-  operation, operationId, registration, response, rowVersion, testKey, systemConfig,
-  approvalAgent, registrationOperation, review, provisioningHistory, tenantId,
+  agent, agentId, blueprintObjectId, credentials, features, mockServer,
+  operationId, registration, response, rowVersion, testKey, systemConfig,
+  approvalAgent, registrationOperation, provisioningHistory, tenantId,
 } from "./test/fixtures";
 
 vi.mock("./auth/msal", () => ({
@@ -59,7 +59,7 @@ describe("Console routes with actual API envelopes", () => {
     renderApp();
     const user = userEvent.setup();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    for (const label of ["Agents", "Register agent", "Connection", "Classifiers", "Policies", "Platform", "Home"]) {
+    for (const label of ["Agents", "Register agent", "Purview connection", "Policies", "Gateway settings", "Home"]) {
       await user.click(within(nav).getByRole("link", { name: label }));
       expect(await screen.findByRole("heading", { name: label })).toBeVisible();
       expect(screen.getByRole("navigation", { name: "Primary" })).toBeVisible();
@@ -375,6 +375,8 @@ describe("Console routes with actual API envelopes", () => {
     await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Gateway API's delegated Graph permissions");
+    expect(screen.getByRole("alert")).toHaveTextContent("Run gateway up");
+    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Continue sign-in" })).not.toBeInTheDocument();
     expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
   });
@@ -416,187 +418,153 @@ describe("Console routes with actual API envelopes", () => {
     expect(JSON.stringify(client.getQueryCache().getAll().map(q => q.state.data))).not.toContain(testKey);
   });
 
-  it("shows failed and null connection states without a render exception or guessed repair command", async () => {
-    renderApp("/data-protection/connection");
-    expect(await screen.findByText("Verification Failed")).toBeVisible();
-    expect(screen.queryByText(/New-ServicePrincipal/)).not.toBeInTheDocument();
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: null }));
-    await userEvent.setup().click(screen.getByRole("button", { name: "Reload status" }));
-    expect(await screen.findByText("Not Connected")).toBeVisible();
+  it("uses only the signed catalog for connection diagnostics without starting old operations", async () => {
+    renderApp("/settings/purview");
+    expect(await screen.findByText("A current, signed policy catalog is available.")).toBeVisible();
+    expect(screen.getByText(/does not prove that assignments can be written/)).toBeVisible();
+    expect(server.requests.every(r => r.method === "GET")).toBe(true);
+    expect(server.requests.some(r => r.path.includes("connection-operations"))).toBe(false);
   });
 
-  it("requires explicit confirmation and never calls the invented recheck endpoint", async () => {
-    server.handlers.set("POST /api/v1/protection/purview/connection-operations", () => {
-      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
-        connection: { ...connected, status: "PendingVerification", lastVerifiedAtUtc: null },
-      }));
-      server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-        operation: { ...operation.operation, status: "Pending" },
-      }));
-      return response({ operationId, status: "Pending", correlationId: operationId }, 202);
-    });
-    renderApp("/data-protection/connection");
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Verify connection" }));
-    await screen.findByRole("button", { name: "Confirm verification" });
-    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Confirm verification" }));
-    expect(await screen.findByText(/Checking access/)).toBeVisible();
-    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Verify connection" })).toBeDisabled();
-    expect(server.requests.some(r => r.path.endsWith("connection:recheck"))).toBe(false);
+  it("does not retain a successful connection claim after catalog refresh fails", async () => {
+    renderApp("/settings/purview");
+    await screen.findByText("A current, signed policy catalog is available.");
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => response({ detail: "Catalog unavailable" }, 503));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Refresh status" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Catalog unavailable");
+    expect(screen.queryByText("A current, signed policy catalog is available.")).not.toBeInTheDocument();
   });
 
-  it("does not treat HTTP 202 as verified Purview access", async () => {
-    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-      ...operation, operation: { ...operation.operation, status: "Running" },
-    }));
-    renderApp(`/data-protection/connection?operation=${operationId}`);
-    expect(await screen.findByText("Running", { exact: true })).toBeVisible();
-    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
+  it("rejects stale catalog evidence in connection diagnostics", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "Purview", retrievedAtUtc: "2000-01-01T00:00:00Z", items: [] }));
+    renderApp("/settings/purview");
+    expect(await screen.findByRole("alert")).toHaveTextContent("current policy catalog");
+    expect(screen.queryByText("A current, signed policy catalog is available.")).not.toBeInTheDocument();
   });
 
-  it("does not show cached Connected data as verified while a fresh Purview check runs", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
-    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-      operation: { ...operation.operation, status: "Running" },
-    }));
-    renderApp(`/data-protection/connection?operation=${operationId}`);
-    expect(await screen.findByText(/Checking access/)).toBeVisible();
-    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Connected", { exact: true })).not.toBeInTheDocument();
-  });
-
-  it("reports verified access only from current connection readback", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
-    renderApp(`/data-protection/connection?operation=${operationId}`);
-    expect(await screen.findByText(/Gateway access is verified/)).toBeVisible();
-    expect(server.requests.some(r => r.method === "POST")).toBe(false);
-  });
-
-  it("allows an explicitly reviewed fresh Gateway check over an expired companion handoff", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
-      connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null, expiresAtUtc: "2000-01-01T00:00:00Z" },
-    }));
-    renderApp("/data-protection/connection");
-    expect(await screen.findByText(/An earlier companion handoff is pending/)).toBeVisible();
-    expect(server.requests.some(r => r.method === "POST")).toBe(false);
-    await userEvent.setup().click(screen.getByRole("button", { name: "Verify connection" }));
-    expect(await screen.findByRole("button", { name: "Confirm verification" })).toBeVisible();
-    expect(server.requests.find(r => r.method === "POST")?.body).toHaveProperty("verificationMode", "Gateway");
-  });
-
-  it("refuses a companion-only API instead of silently starting the old handoff", async () => {
-    server.handlers.set("POST /api/v1/protection/purview/connection-operations:review", () => ({
-      ...review, review: { ...review.review, operationType: "ConnectPurviewTenant", verificationMode: null },
-    }));
-    renderApp("/data-protection/connection");
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Verify connection" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("API did not review Gateway-owned verification");
-    expect(screen.queryByRole("button", { name: "Confirm verification" })).not.toBeInTheDocument();
-    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
-  });
-
-  it("polls Purview progress and only claims access after current authoritative connection readback", async () => {
-    let reads = 0;
-    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => {
-      reads++;
-      if (reads === 1) return { operation: { ...operation.operation, status: "Running" } };
-      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
-      return operation;
-    });
-    renderApp(`/data-protection/connection?operation=${operationId}`);
-    expect(await screen.findByText(/Checking access/)).toBeVisible();
-    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/Gateway access is verified/)).toBeVisible(), { timeout: 5000 });
-    expect(reads).toBe(2);
-  }, 10000);
-
-  it("shows exact safe Purview failure step, code and support reference without diagnosing a resource", async () => {
-    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-      operation: { ...operation.operation, status: "RequiresManualIntervention", requiresManualIntervention: true,
-        failureCode: "PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH",
-        steps: [{ step: "DiscoverProviderState", status: "Failed", failureCode: "PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH" }] },
-    }));
-    renderApp(`/data-protection/connection?operation=${operationId}`);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Purview verification failed.");
-    await userEvent.setup().click(screen.getByText("Check details"));
-    expect(screen.getByText(`Reference: ${operationId}`)).toBeVisible();
-    expect(screen.getByText(/DiscoverProviderState: Failed/)).toHaveTextContent("PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH");
-    expect(screen.queryByText(/New-ServicePrincipal/)).not.toBeInTheDocument();
-  });
-
-  it("recovers an uncertain Purview start by the reviewed operation ID without posting again", async () => {
-    server.handlers.set("POST /api/v1/protection/purview/connection-operations", () => {
-      server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-        operation: { ...operation.operation, status: "Running" },
-      }));
-      throw new TypeError("Lost");
-    });
-    renderApp("/data-protection/connection");
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Verify connection" }));
-    await user.click(await screen.findByRole("button", { name: "Confirm verification" }));
-    expect(await screen.findByText(/Checking access/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Verify connection" })).toBeDisabled();
-    expect(server.requests.filter(r => r.path.endsWith("/connection-operations") && r.method === "POST")).toHaveLength(1);
-  });
-
-  it("does not start verification with an expired review", async () => {
-    server.handlers.set("POST /api/v1/protection/purview/connection-operations:review", () => ({
-      ...review, expiresAtUtc: "2000-01-01T00:00:00Z",
-    }));
-    renderApp("/data-protection/connection");
-    const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Verify connection" }));
-    await user.click(await screen.findByRole("button", { name: "Confirm verification" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("review expired");
-    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
-  });
-
-  it("does not label expired connection readback as Connected", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
-      connection: { ...connected, expiresAtUtc: "2000-01-01T00:00:00Z" },
-    }));
-    renderApp("/data-protection/connection");
-    expect(await screen.findByText("Verification Expired")).toBeVisible();
-    expect(screen.queryByText("Connected", { exact: true })).not.toBeInTheDocument();
-  });
-
-  it("unwraps a classifier inventory and renders exactName", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
+  it("redirects the retired classifier page to policies without requesting the classifier inventory", async () => {
     renderApp("/data-protection/classifiers");
-    expect(await screen.findByText("Credit Card Number")).toBeVisible();
-    expect(screen.getByRole("table", { name: "Classifiers" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Policies" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Classifiers" })).not.toBeInTheDocument();
+    expect(server.requests.some(r => r.path.includes("sensitive-information-types"))).toBe(false);
   });
 
-  it("shows stale inventory errors instead of an empty successful list", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
-    server.handlers.set("GET /api/v1/protection/purview/sensitive-information-types", () => response({
-      detail: "The tenant has no current inventory.", errorCode: "PURVIEW_INVENTORY_STALE", correlationId: operationId,
-    }, 409));
-    renderApp("/data-protection/classifiers");
-    expect(await screen.findByRole("alert")).toHaveTextContent("The tenant has no current inventory.");
-    expect(screen.queryByText("No classifiers were returned by Purview.")).not.toBeInTheDocument();
+  it("opens an individual agent's protection tab without treating missing catalog data as no Purview policies", async () => {
+    renderApp("/data-protection");
+    expect(await screen.findByText("Purview returned no policies for this tenant.")).toBeVisible();
+    await userEvent.setup().click(await screen.findByRole("link", { name: agent.name }));
+    expect(await screen.findByRole("tab", { name: "Data protection" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText(agent.agent365.agentId)).toBeVisible();
+    expect(screen.queryByText(agent.agent365.blueprintId)).not.toBeInTheDocument();
+    expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
+    expect(server.requests.every(r => r.method === "GET")).toBe(true);
   });
 
-  it("unwraps policies and does not confuse a readiness object with a status string", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/dlp-profiles", () => ({ items: [{
-      id: operationId, blueprintApplicationId: agent.agent365.blueprintId, displayName: "Card policy",
-      mode: "AuditOnly", policyMode: "SimulationWithoutTips", status: "SimulationReady",
-      sensitiveInformationTypeName: "Credit Card Number", sensitiveInformationTypes: null,
-      readiness: { isReady: false, blockers: ["RuntimeVerificationPending"] }, lastReadbackAtUtc: null, rowVersion,
-    }] }));
+  it.each([true, false, null])("does not infer verified enforcement from purviewEnabled=%s", async enabled => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...agent, features: { ...features, purviewEnabled: enabled } }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    expect(await screen.findByText("No policies selected in this Console. Policies scoped elsewhere in Purview may still apply.")).toBeVisible();
+    expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
+    expect(screen.getByText(`Gateway content evaluation: ${enabled === true ? "Enabled · verification needed" : enabled === false ? "Not enabled" : "Not reported"}`)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+  });
+
+  it("reviews the exact agent and policy before confirming, and does not label a pending assignment protected", async () => {
+    const policyId = "99999999-9999-4999-8999-999999999999";
+    const revision = "a".repeat(64);
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [
+      { id: policyId, displayName: "Existing DLP", mode: "Enable", enforcementPlanes: ["Application"], individualApplicationIds: [], revision, compatibility: { canAssign: true, reason: null } },
+    ] }));
+    server.handlers.set(`POST /api/v1/agents/${agentId}/purview-policies/review`, () => ({ operationId, agentId, agentIdentityId: agent.agent365.agentId, policyId, policyName: "Existing DLP", expiresAtUtc: new Date(Date.now()+60000).toISOString(), effect: "Only this individual agent is added." }));
+    server.handlers.set(`POST /api/v1/agents/${agentId}/purview-policies/${operationId}/confirm`, () => {
+      server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: false, allowObservedAtUtc: null, blockObservedAtUtc: null,
+        items: [{ operationId, policyId, policyName: "Existing DLP", status: "Pending", failureCode: null, confirmedAtUtc: new Date(Date.now() - 120000).toISOString(), expiresAtUtc: new Date(Date.now() + 780000).toISOString(), assignedAtUtc: null }] }));
+      return response({ operationId, status: "Pending" }, 202);
+    });
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    const user = userEvent.setup();
+    await screen.findByRole("option", { name: "Existing DLP" });
+    await user.selectOptions(screen.getByLabelText("Choose an existing policy"), policyId);
+    expect(server.requests.filter(x => x.method === "POST")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Review assignment" }));
+    expect(await screen.findByText(`Agent identity: ${agent.agent365.agentId}`)).toBeVisible();
+    expect(server.requests.filter(x => x.method === "POST")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Apply to this agent" }));
+    expect(await screen.findByText("Applying assignment")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "Applying assignment" })).toBeVisible();
+    expect(screen.getByText(/Elapsed: 2m/)).toBeVisible();
+    expect(screen.getByText(/Last checked/)).toBeVisible();
+    expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    expect(server.requests.find(x => x.path.endsWith("/purview-policies/review"))?.body).toEqual({ policyId, revision });
+    expect(server.requests.filter(x => x.method === "POST")).toHaveLength(2);
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: true, allowObservedAtUtc: null, blockObservedAtUtc: null,
+      items: [{ operationId, policyId, policyName: "Existing DLP", status: "Assigned", failureCode: null, assignedAtUtc: new Date().toISOString() }] }));
+    await user.click(screen.getByRole("button", { name: "Check assignment status" }));
+    expect(await screen.findByText("Assigned", { exact: true })).toBeVisible();
+    expect(screen.queryByRole("progressbar", { name: "Applying assignment" })).not.toBeInTheDocument();
+    expect(screen.getByText("Assigned · awaiting sync and gateway verification")).toBeVisible();
+    expect(server.requests.filter(x => x.method === "POST")).toHaveLength(2);
+  });
+
+  it("stops animating an overdue assignment without inventing success or submitting again", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: false, allowObservedAtUtc: null, blockObservedAtUtc: null,
+      items: [{ operationId, policyId: operationId, policyName: "Existing DLP", status: "Pending", failureCode: null, confirmedAtUtc: "2000-01-01T00:00:00Z", expiresAtUtc: "2000-01-01T00:15:00Z", assignedAtUtc: null }] }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    expect(await screen.findByText("Assignment taking longer than expected")).toBeVisible();
+    expect(screen.queryByRole("progressbar", { name: "Applying assignment" })).not.toBeInTheDocument();
+    expect(screen.getByText(/The confirmation window has elapsed/)).toBeVisible();
+    expect(server.requests.every(x => x.method === "GET")).toBe(true);
+  });
+
+  it("stops showing assignment activity when its status cannot be read", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: false, allowObservedAtUtc: null, blockObservedAtUtc: null,
+      items: [{ operationId, policyId: operationId, policyName: "Existing DLP", status: "Pending", failureCode: null, assignedAtUtc: null }] }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    expect(await screen.findByRole("progressbar", { name: "Applying assignment" })).toBeVisible();
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => { throw new TypeError("Offline"); });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Check assignment status" }));
+    expect(await screen.findByText("Assignment status is unavailable. No protection state has been assumed.")).toBeVisible();
+    expect(screen.queryByRole("progressbar", { name: "Applying assignment" })).not.toBeInTheDocument();
+  });
+
+  it("does not report assigned policy state as verified blocking without both gateway observations", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({ agentId, agentIdentityId: agent.agent365.agentId, bindingCurrent: true,
+      allowObservedAtUtc: new Date().toISOString(), blockObservedAtUtc: null,
+      items: [{ operationId, policyId: operationId, policyName: "Existing DLP", status: "Assigned", failureCode: null, assignedAtUtc: new Date().toISOString() }] }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    expect(await screen.findByText("Assigned · awaiting sync and gateway verification")).toBeVisible();
+    expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
+  });
+
+  it("searches and paginates agents while preserving the server-side search", async () => {
+    server.handlers.set("GET /api/v1/agents", request => ({
+      items: request.query.get("cursor") ? [{ ...agent, agentId: operationId, name: "Second match" }] : [agent],
+      nextCursor: request.query.get("search") && !request.query.get("cursor") ? "page-two" : null,
+      totalCount: null,
+    }));
     renderApp("/data-protection/policies");
-    expect(await screen.findByText("Card policy")).toBeVisible();
-    expect(screen.getByText("Simulating", { exact: true })).toBeVisible();
-    expect(screen.getByText("Simulation Ready")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "New policy" })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Search agents" }), "Test");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(await screen.findByRole("button", { name: "Load more agents" }));
+    expect(await screen.findByRole("link", { name: "Second match" })).toBeVisible();
+    expect(server.requests.find(r => r.query.get("cursor") === "page-two")?.query.get("search")).toBe("Test");
+    expect(screen.queryByRole("button", { name: "Load more agents" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Purview catalog without calling the removed blueprint-profile workflow", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
+      tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [{
+        id: operationId, displayName: "Existing tenant DLP", mode: "Enable", enforcementPlanes: ["Application"],
+        individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
+      }],
+    }));
+    renderApp("/data-protection/policies");
+    expect(await screen.findByText("Existing tenant DLP")).toBeVisible();
+    expect(server.requests.some(r => r.path.includes("dlp-profiles"))).toBe(false);
+    expect(screen.getByText("Compatible", { exact: true })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
   });
 
   it.each(["/", "/agents", `/agents/${agentId}`, "/data-protection/connection", "/data-protection/classifiers", "/data-protection/policies", "/platform"])(

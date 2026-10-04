@@ -77,10 +77,6 @@ public sealed class ProblemDetailsMiddleware
             {
                 "AgentIngressCredential" =>
                     ErrorCodes.AGENT_INGRESS_CREDENTIAL_NOT_FOUND,
-                "ProtectionAdminOperation" =>
-                    ErrorCodes.OPERATION_NOT_FOUND,
-                "PurviewDlpProfile" =>
-                    ErrorCodes.OPERATION_NOT_FOUND,
                 _ => ErrorCodes.AGENT_NOT_FOUND
             };
 
@@ -180,7 +176,7 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => StatusCodes.Status409Conflict,
                 ErrorCodes.PURVIEW_INVENTORY_STALE => StatusCodes.Status409Conflict,
-                ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY => StatusCodes.Status409Conflict,
+                ErrorCodes.PURVIEW_ASSIGNMENT_NOT_READY => StatusCodes.Status409Conflict,
                 ErrorCodes.PROTECTION_REVIEW_EXPIRED => StatusCodes.Status410Gone,
                 ErrorCodes.PROTECTION_CONFIRMATION_INVALID => StatusCodes.Status403Forbidden,
                 "PURVIEW_RUNTIME_CONTEXT_CHANGED" => StatusCodes.Status412PreconditionFailed,
@@ -203,7 +199,7 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => "Protection Capability Unavailable",
                 ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => "Purview Tenant Not Connected",
                 ErrorCodes.PURVIEW_INVENTORY_STALE => "Purview Inventory Stale",
-                ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY => "Purview DLP Profile Not Ready",
+                ErrorCodes.PURVIEW_ASSIGNMENT_NOT_READY => "Purview DLP Profile Not Ready",
                 ErrorCodes.PROTECTION_REVIEW_EXPIRED => "Protection Review Expired",
                 ErrorCodes.PROTECTION_CONFIRMATION_INVALID => "Protection Confirmation Invalid",
                 ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => "Prompt Evaluation Unavailable",

@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Agent365;
 
-public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
+public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient, IAgentPurviewAccessProvisioner
 {
     private static readonly TimeSpan[] RecoveryLookupDelays =
     [
@@ -144,6 +144,21 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         {
             throw NormalizeDependencyFailure(exception);
         }
+    }
+
+    public async Task EnsureAsync(Guid tenantId, Guid principalId, Guid childId, Guid blueprintId, CancellationToken ct)
+    {
+        if (!Guid.TryParse(_options.TenantId, out var configuredTenant) || tenantId != configuredTenant ||
+            principalId == Guid.Empty || childId == Guid.Empty || blueprintId == Guid.Empty || childId == blueprintId)
+            throw Failure("PURVIEW_RUNTIME_IDENTITY_MISMATCH", "The individual agent runtime identity is invalid.");
+        var identity = await _graph.GetAgentIdentityAsync(principalId.ToString(), ct);
+        if (identity is null || !Guid.TryParse(identity.Id, out var returnedPrincipal) || returnedPrincipal != principalId ||
+            !Guid.TryParse(identity.AppId, out var returnedChild) || returnedChild != childId ||
+            !Guid.TryParse(identity.AgentIdentityBlueprintId, out var returnedBlueprint) || returnedBlueprint != blueprintId)
+            throw Failure("PURVIEW_RUNTIME_IDENTITY_MISMATCH", "The exact child and blueprint relationship could not be verified.");
+        foreach (var role in new[] { "Content.Process.User", "ProtectionScopes.Compute.User" })
+            await EnsureApplicationRoleAssignmentAsync(principalId, Guid.Parse("00000003-0000-0000-c000-000000000000"),
+                role, null, "Purview individual-agent evaluation", ct);
     }
 
     private async Task<Agent365ProvisioningStepResult> AssignAgent365AccessAsync(
@@ -614,29 +629,29 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             state.BlueprintClientId,
             "The blueprint client ID is required before configuring federation.");
 
-        var gatewayManagedIdentityPrincipalId =
+        var gatewayWorkloadPrincipalId =
             await _graph.GetCallerPrincipalObjectIdAsync(cancellationToken);
-        if (gatewayManagedIdentityPrincipalId != context.GatewayManagedIdentityPrincipalId)
+        if (gatewayWorkloadPrincipalId != context.GatewayWorkloadPrincipalId)
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
-                "The Microsoft Graph caller doesn't match the configured Gateway managed identity.");
+                "The Microsoft Graph caller doesn't match the configured Gateway workload identity.");
         }
 
         if (!MatchesOptionalGuid(
-                state.GatewayManagedIdentityPrincipalId,
-                gatewayManagedIdentityPrincipalId))
+                state.GatewayWorkloadPrincipalId,
+                gatewayWorkloadPrincipalId))
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The persisted Gateway managed identity doesn't match the verified Microsoft Graph caller.",
+                "The persisted Gateway workload identity doesn't match the verified Microsoft Graph caller.",
                 requiresManualIntervention: true);
         }
 
         var gatewayCredentialId = await EnsureFederatedCredentialAsync(
             blueprintObjectId,
             "a365-gateway",
-            gatewayManagedIdentityPrincipalId,
+            gatewayWorkloadPrincipalId,
             context.TenantId,
             cancellationToken);
 
@@ -644,7 +659,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             request,
             state with
             {
-                GatewayManagedIdentityPrincipalId = gatewayManagedIdentityPrincipalId.ToString("D"),
+                GatewayWorkloadPrincipalId = gatewayWorkloadPrincipalId.ToString("D"),
                 GatewayFederatedCredentialId = gatewayCredentialId
             },
             "BlueprintGatewayFederationVerified");
@@ -782,7 +797,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The blueprint federated credential doesn't match the managed identity binding.",
+                "The blueprint federated credential doesn't match the workload identity binding.",
                 requiresManualIntervention: true);
         }
     }
@@ -1086,14 +1101,14 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         var blueprintPrincipalObjectId = RequiredStateGuid(
             state.BlueprintPrincipalObjectId,
             "The blueprint principal object ID is required for the final verification.");
-        var gatewayManagedIdentityPrincipalId = RequiredStateGuid(
-            state.GatewayManagedIdentityPrincipalId,
-            "The Gateway managed identity principal ID is required for the final verification.");
-        if (gatewayManagedIdentityPrincipalId != context.GatewayManagedIdentityPrincipalId)
+        var gatewayWorkloadPrincipalId = RequiredStateGuid(
+            state.GatewayWorkloadPrincipalId,
+            "The Gateway workload identity principal ID is required for the final verification.");
+        if (gatewayWorkloadPrincipalId != context.GatewayWorkloadPrincipalId)
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The Gateway managed identity no longer matches the trusted configuration.",
+                "The Gateway workload identity no longer matches the trusted configuration.",
                 requiresManualIntervention: true);
         }
 
@@ -1123,8 +1138,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         _ = RequiredStateGuid(
             state.RegistryCreatedByObjectId,
             "The delegated Agent 365 Registry creator object ID is required for final verification.");
-        if (state.Agent365RegistrationAcceptedAtUtc is null &&
-            state.Agent365RegistrationVerifiedAtUtc is null)
+        if (state.Agent365RegistrationAcceptedAtUtc is null)
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
@@ -1182,11 +1196,11 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             cancellationToken);
         var graphCallerPrincipalId =
             await _graph.GetCallerPrincipalObjectIdAsync(cancellationToken);
-        if (graphCallerPrincipalId != gatewayManagedIdentityPrincipalId)
+        if (graphCallerPrincipalId != gatewayWorkloadPrincipalId)
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The Microsoft Graph caller no longer matches the persisted Gateway managed identity.",
+                "The Microsoft Graph caller no longer matches the persisted Gateway workload identity.",
                 requiresManualIntervention: true);
         }
 
@@ -1207,9 +1221,9 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         var issuer = $"https://login.microsoftonline.com/{context.TenantId:D}/v2.0";
         ValidateFederatedCredential(
             gatewayCredentials[0],
-            $"a365-gateway-{gatewayManagedIdentityPrincipalId:N}",
+            $"a365-gateway-{gatewayWorkloadPrincipalId:N}",
             issuer,
-            gatewayManagedIdentityPrincipalId.ToString("D"));
+            gatewayWorkloadPrincipalId.ToString("D"));
 
         if (_observabilityTokenProvider is null)
         {
@@ -1217,6 +1231,35 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
                 "The Agent 365 observability token proof isn't configured.",
                 requiresManualIntervention: true);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_options.ProvisioningClientSecret) &&
+            !_options.BlueprintClientSecrets.ContainsKey(blueprintClientId.ToString("D")))
+        {
+            if (string.IsNullOrWhiteSpace(_options.RuntimeBlueprintCredentialDirectory))
+                throw Failure(ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
+                    "The runtime blueprint credential directory is not configured. Run gateway up.", requiresManualIntervention: true);
+            var mayCreate = request.Agent.BlueprintSelectionMode == "CreateNew";
+            if (mayCreate)
+            {
+                ValidateGatewayBlueprint(blueprint, context.BlueprintDisplayName, context.BlueprintKey,
+                    blueprintObjectId.ToString("D"), blueprintClientId.ToString("D"));
+                if (!await VerifyBlueprintRelationshipsAfterMutationAsync(blueprintObjectId.ToString("D"),
+                    context.OwnerObjectId, requireOwnerAndSponsor: true, cancellationToken))
+                    throw Failure(ErrorCodes.PROVISIONING_STATE_INVALID,
+                        "Blueprint credential ownership could not be verified.", requiresManualIntervention: true);
+            }
+            try
+            {
+                await RuntimeBlueprintCredentialStore.EnsureAsync(_options.RuntimeBlueprintCredentialDirectory,
+                    context.TenantId, blueprintObjectId, blueprintClientId, mayCreate, _graph, cancellationToken);
+            }
+            catch (Agent365ObservabilityConfigurationException exception)
+            {
+                _logger.LogWarning("Runtime blueprint credential verification failed: {Code}", exception.Code);
+                throw Failure(ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
+                    "The exact runtime blueprint credential requires repair; no existing credential was rotated.", requiresManualIntervention: true);
+            }
         }
 
         await VerifyObservabilityTokenAfterPropagationAsync(
@@ -1328,8 +1371,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             request.Agent.OwnerObjectId,
             "The accountable owner object ID is invalid.");
         RequiredOptionGuid(_options.ObservabilityApplicationClientId);
-        var gatewayManagedIdentityPrincipalId = RequiredOptionGuid(
-            _options.ProvisioningManagedIdentityPrincipalId);
+        var gatewayWorkloadPrincipalId = RequiredOptionGuid(
+            _options.ProvisioningPrincipalId);
         var useExistingBlueprint = string.Equals(
             request.Agent.BlueprintSelectionMode,
             "UseExisting",
@@ -1357,8 +1400,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             ? BuildBlueprintKey(request.Agent.Environment, blueprintDisplayName)
             : "selected";
 
-        if ((!string.IsNullOrWhiteSpace(_options.ProvisioningManagedIdentityClientId) &&
-             (!Guid.TryParse(_options.ProvisioningManagedIdentityClientId, out var managedIdentityClientId) ||
+        if ((!string.IsNullOrWhiteSpace(_options.ProvisioningClientId) &&
+             (!Guid.TryParse(_options.ProvisioningClientId, out var managedIdentityClientId) ||
               managedIdentityClientId == Guid.Empty)) ||
             _options.ProvisioningHttpTimeoutSeconds is < 1 or > 120 ||
             string.IsNullOrWhiteSpace(_options.ObservabilityAppRoleValue))
@@ -1372,7 +1415,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             tenantId,
             ownerObjectId,
             managerApplicationIds,
-            gatewayManagedIdentityPrincipalId,
+            gatewayWorkloadPrincipalId,
             blueprintDisplayName,
             blueprintKey,
             BuildDisplayName("Identity", request.Agent.Name, request.Agent.AgentRegistrationId));
@@ -1964,7 +2007,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         Guid TenantId,
         Guid OwnerObjectId,
         IReadOnlyList<Guid> ManagerApplicationIds,
-        Guid GatewayManagedIdentityPrincipalId,
+        Guid GatewayWorkloadPrincipalId,
         string BlueprintDisplayName,
         string BlueprintKey,
         string AgentIdentityDisplayName);

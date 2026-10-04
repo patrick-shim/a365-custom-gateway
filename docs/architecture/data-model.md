@@ -1,200 +1,62 @@
-# Data model
+# Runtime data model
 
-Persistence for the product described in the
-[product brief](../spec/product-brief.md). UI clients do not own this model —
-the **C#** API and worker do.
+PostgreSQL is the authoritative database. The fresh model currently contains
+16 tables. Startup creates the current EF model under a PostgreSQL advisory lock.
+Existing schemas must match the model; unsupported schema adoption is rejected.
+See the [database integration checks](../../tests/README.md).
 
-**Target engine: PostgreSQL** (SQLite optional for single-node local/dev). The
-relational schema, EF model, transactional outbox, and idempotency contracts stay
-intact; Azure SQL is only a legacy deploy-profile binding. Local DB behavior does
-not establish live identity, networking, or another deployment's migration state.
+## Registration and provisioning
 
-## Core relationships
+`AgentRegistrations` contains the external identifier, lifecycle, requested and
+resolved blueprint, individual agent identity, Registry registration identifier,
+feature selection and protection revision. Filtered unique indexes prevent
+active registrations from sharing external or identity bindings.
+`AgentFeatureConfigurations` holds each agent's runtime choices.
 
-```mermaid
-erDiagram
-    AGENT_REGISTRATIONS ||--o{ PROVISIONING_JOBS : owns
-    PROVISIONING_JOBS ||--o{ PROVISIONING_JOB_STEPS : contains
-    AGENT_REGISTRATIONS ||--|| AGENT_FEATURE_CONFIGURATIONS : configures
-    AGENT_REGISTRATIONS ||--o| AGENT_CREDENTIAL_REFERENCES : references
-    AGENT_REGISTRATIONS ||--o{ AGENT_INGRESS_CREDENTIALS : authenticates
-    AGENT_REGISTRATIONS ||--o{ PROMPT_EVALUATION_RECORDS : protects
-    PURVIEW_TENANT_CONNECTIONS ||--o{ SIT_SNAPSHOT_GENERATIONS : owns
-    SIT_SNAPSHOT_GENERATIONS ||--o{ SIT_SNAPSHOTS : contains
-    PURVIEW_TENANT_CONNECTIONS ||--o| PURVIEW_KYD_CONFIGURATIONS : configures
-    PURVIEW_TENANT_CONNECTIONS ||--o{ PURVIEW_DLP_PROFILES : configures
-    PROTECTION_ADMIN_OPERATIONS ||--o{ PROTECTION_ADMIN_OPERATION_STEPS : contains
-```
+`ProvisioningJobs` and `ProvisioningJobSteps` persist the current seven-step
+workflow: resolve blueprint, ensure blueprint principal, configure gateway
+federation, create agent identity, assign Agent 365 access, register the agent,
+and verify the connection. Each step resumes only from verified saved identifiers.
+Credentials do not belong in serialized provisioning state.
 
-This diagram shows principal aggregates. Current DLP profiles bind to registrations
-through the resolved blueprint application ID; the registration's legacy
-`PurviewPolicyProfileId` foreign key points to the older combined profile table.
-Do not treat those two profile models as interchangeable.
+`AgentIngressCredentials` stores gateway API credential metadata and hashes.
+Runtime blueprint credential material is held in ignored bootstrap secret
+storage, independently from the ingress credentials.
 
-## Registration and credentials
+## Policy assignment and prompt decisions
 
-`AgentRegistrations` records the generated external ID, requested and resolved
-blueprint, child identity, Registry identifiers, lifecycle status, feature choices,
-row version and a nonempty protection revision. Filtered unique indexes prevent
-active registrations from sharing external or child identity bindings.
+`AgentPolicyAssignments` references one registration and records the individual
+agent identity, selected existing Purview policy, reviewed definition revision,
+actor, confirmation window, assignment result and failure information. The foreign
+key rejects orphan assignments. The policy definition and classifier/rule content
+remain in Purview; shared blueprint profiles are not stored in this database.
 
-The aggregate also records the requested Purview policy mode and configuration
-operation ID. A reviewed new-blueprint request persists deferred configuration on
-the protection operation until the resolved identity is available. Turning off one
-agent's usage does not remove the blueprint's shared DLP profile.
+`PromptEvaluationRecords` binds each evaluation to its registration, protection
+revision, context digest and effective requirements. PostgreSQL row locks protect
+the registration and features during receipt validation. A changed protection
+context invalidates a previous receipt. A current authenticated individual-policy
+scope readback is required when Purview evaluation is enabled.
 
-`AgentIngressCredentials` stores key ID, format/hash metadata, salted verifier,
-expiry, revocation and creating administrator. It never stores the clear key.
-`AgentCredentialReferences` serves the separate provisioning reference.
+`AiInteractionRecords` and `PurviewDecisions` persist interaction and decision
+metadata. `ActivityReceipts` tracks activity submissions. Content storage is
+S3-compatible storage; authorization and retention follow the ingress contracts.
 
-## Provisioning and Registry recovery
+## Coordination and settings
 
-`ProvisioningJobs` owns ordered `ProvisioningJobSteps`. The current workflow has
-seven stages. Persisted enum values are compatibility contracts.
+`OutboxMessages` provides durable publication to the provisioning worker queue.
+Claims use an atomic PostgreSQL update with `FOR UPDATE SKIP LOCKED`; lease
+coordinates prevent stale publishers from changing a newer claim.
+`IdempotencyRecords` protects ingress retries. `IngressRateLimitBuckets` provides
+shared credential, agent and global limits across replicas.
 
-The API's `Agent365RegistryAttemptState` is serialized into the RegisterAgent
-step's result data. It records the actor, authentication mode, start time, planned
-Registry ID and accepted ID when known. This API-owned state authorizes exact
-Registry recovery; historical worker compatibility fields do not.
+`SystemConfigurations` holds supported gateway defaults and limits.
+`SystemConfigurationMutations` records settings request hashes and results under
+a tenant/idempotency-key unique constraint. `AuditEvents` records administrative
+activity. Integration readiness is derived from configured runtime credentials and
+current individual-agent policy evidence.
 
-Jobs can wait for administrator action, complete, fail or require manual
-intervention. Registry acceptance and final verification are step facts, not extra
-job statuses. An unknown POST outcome remains readback-only and never restores
-permission to POST again.
-
-## Idempotency, locks and dispatch
-
-Data-plane idempotency binds registration, normalized endpoint and canonical
-UUIDv4 key to the request hash. Database application locks serialize the scope.
-Matching requests can replay a safe stored result; a changed hash conflicts.
-One-time secret responses are not cached for replay.
-
-`OutboxMessages` is written with its state transition and dispatched afterward.
-Its safe payload identifies workflow work; it has no job/registration foreign key.
-Persistence derives the destination from the message type. Registration and
-protection queues remain separate, and consumers tolerate duplicate delivery.
-
-Protection queue messages bind both `ExpectedStepIndex` and
-`ExpectedStepAttemptCount`, the durable step attempt count captured when queued.
-Attempt count is existing step state; this transport addition creates no SQL
-column. Under the execution lock, a committed same-step retry supersedes its
-earlier publication even if timestamps tie. A legitimately running attempt can
-still recover using its original queued generation.
-
-Processing and broker settlement are separate: a lost completion acknowledgement
-does not fail the next step. Terminal publication propagation uses fresh locked
-state and an atomic database transition; failing an obsolete outbox item cannot
-fail newer operation work. Current-step legacy messages without a generation
-dead-letter with `PROTECTION_ADMIN_MESSAGE_ATTEMPT_UNBOUND`; unbound publication
-exhaustion reports `PROTECTION_ADMIN_PUBLICATION_GENERATION_UNBOUND` without
-inventing zero or rewriting the operation/payload/retry/claim. Terminal and
-older-step messages retain their existing completion/dead-letter dispositions.
-Producers and workers therefore require matching releases; see the
-[upgrade compatibility boundary](../../operations/gateway-upgrade.md#protection-transport-compatibility).
-
-Telemetry mirror attempt-suppression markers (legacy `AzureMonitorMirrorScheduled`
-or the portable OpenTelemetry equivalent) are not per-destination delivery
-receipts. They may precede span emission and can survive a crash without a
-delivered span. The data model does not retain independently confirmed landing
-for every downstream telemetry destination.
-
-Protection operations also bind actor, tenant, target, reviewed payload, accepted
-request, confirmation verifier, idempotency key and row version. Provider work
-does not hold the runtime-test acceptance transaction open.
-
-An ordinary start's review token ID identifies its durable protection operation.
-Companion completion instead has a separate approval record: after acceptance it
-is `Submitted`, and its `ReadbackReferenceId` identifies the original
-`ConnectPurviewTenant` operation that resumes as `Pending`. The connection
-resource is `PendingVerification`. These IDs and states are not interchangeable.
-Accepted connection result JSON retains its bounded non-secret companion launch;
-same-actor GET projects it only while awaiting administrator completion.
-Recovery reads the existing records without renewing consent or launch expiry.
-
-## Protection state
-
-| Record | Persisted purpose |
-|---|---|
-| ProtectionCapabilities | Installed, NotInstalled, PendingPropagation or Unavailable state, non-secret resource identifiers and exact readback |
-| PurviewTenantConnections | Exact tenant authority, status, expiry and active inventory generation |
-| SIT generations and snapshots | Tenant-backed GUID, exact Unicode name, publisher, bounded generation and expiry |
-| PurviewKnowYourDataConfigurations | Fixed enterprise-AI-apps Group on the Application plane |
-| PurviewDlpProfiles | One Individual/Application profile per blueprint, selected SITs and thresholds, policy mode, provider IDs and readiness |
-| ProtectionAdminOperations and steps | Reviewed intent, deferred binding, durable progress, safe failures, runtime consent/result and recovery disposition |
-
-Capability startup synchronization uses deployment/source/time-bound attestation,
-a database application lock and a serializable transaction. The normal bootstrap
-path requires either zero or all three capability rows, preserves unchanged row
-versions and rejects installed-fact drift. A separate preparation-history path
-requires its matching authorization; old bootstrap configuration cannot bypass
-an upgraded projection's receipt requirements.
-
-A DLP profile preserves compatibility fields for one SIT and the legacy
-Enforce/AuditOnly mode. Its normalized selection uses the current list when
-present. Each selected SIT carries independent minimum/maximum count and
-confidence values. The four current modes are Enforce, SimulationWithTips,
-SimulationWithoutTips and Disabled.
-
-Exact policy readback, propagation, token-role checks and runtime observations are
-separate facts. SimulationReady and Disabled are not enforced-ready. Enforce
-readiness requires current capability/connection/inventory binding and a valid
-runtime certification for the exact profile and test registration.
-
-The optional response field `readiness.validUntilUtc` derives the earliest usable
-connection/inventory expiry, capped by runtime behavior evidence for Enforce.
-It is not a new persisted lease or request authority. Equality is expired, and
-context changes can invalidate it sooner. `features.purviewProfileStatus` projects
-the saved profile's status separately from configuration-operation progress.
-These additive read projections do not add SQL tables or replace receipt checks.
-
-Existing-profile reconciliation can replace the profile's inventory generation
-and snapshot expiry only in the accepted transaction for a newly confirmed exact
-review. It preserves settings and provider IDs, resets verification to Pending
-and clears previous propagation, token-role and runtime certification. The new
-inventory and unchanged selection/scope are revalidated at acceptance; review
-drift rolls back rather than rebinding silently. This uses existing columns and
-does not introduce a schema migration or authorize provider writes.
-
-Legacy combined profiles and review-required candidates remain in the model.
-Their existence or provider IDs do not establish current readiness. The source
-retains database bootstrap/upgrade attestation contracts and the restored
-DatabaseMigrator source. Schema application, ordered migration, preservation and
-cloud attestation retain separate acceptance under the milestone plan.
-
-## Runtime tests and prompt receipts
-
-Runtime tests reuse `ProtectionAdminOperations`; there is no dedicated runtime
-test table. Immutable consent and suite/configuration hashes accompany bounded
-sanitized result JSON. Raw sample content is held by disposable ephemeral objects
-and is not queued or persisted as operation content.
-
-An execution commits acceptance before calling the provider, then reloads current
-state for finalization. SQL finalization uses a fresh serializable transaction and
-consistent registration-before-profile locking. Unknown or expired executions
-remain explicit outcomes rather than replaying sample submissions.
-
-Prompt-evaluation records store the salted content binding, decisions, expiry,
-consumption state, protection revision and context hash. The context binds the
-current shared profile, classifier thresholds, policy mode, capability, inventory,
-registration and certification. Persistence guards coordinate relevant protection
-changes so stale receipts cannot authorize protected ingestion.
-
-## Content, retention and deletion
-
-Approved raw interaction content belongs in the Blob content store. SQL and
-outbox data contain bounded operational metadata, hashes and decisions rather
-than clear prompts, responses, credentials or provider bodies.
-
-Idempotency records receive their configured lifetime. The retained repository
-does not implement background cleanup for activity receipts, audit events or
-outbox rows; legacy retention columns are not active cleanup controls.
-
-Registration deletion is Gateway state management and does not imply removal of
-Microsoft identities, Registry objects or shared policies. Those require exact
-ownership and separate operational handling.
-
-The source contracts are in
-[GatewayDbContext](../../src/Gateway.Infrastructure/Persistence/GatewayDbContext.cs),
-[entity configurations](../../src/Gateway.Infrastructure/Persistence/Configurations),
-[protection context](../../src/Gateway.Domain/Models/PromptProtectionContext.cs) and
-[runtime repository](../../src/Gateway.Infrastructure/Persistence/Repositories/PurviewRuntimeTestRepository.cs).
+Concurrency tokens are application-generated binary values persisted in
+PostgreSQL. Constraint and index declarations use native PostgreSQL SQL.
+The database regression suite checks schema/model parity, concurrent creation,
+orphan rejection, distributed limits, outbox claims, idempotency and receipt
+transactions against a newly created disposable database.

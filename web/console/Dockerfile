@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm test -- --reporter=dot && npm run build
+RUN npm run check:reachability && npm test -- --reporter=dot && npm run build
 
 FROM nginx:1.27-alpine AS final
 ARG SOURCE_REVISION=unknown

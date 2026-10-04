@@ -445,7 +445,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
         {
             throw new ConflictException(
                 "Only the current delegated-administrator provisioning workflow can perform this action. Historical jobs remain read-only.",
-                ErrorCodes.PROVISIONING_LEGACY_JOB);
+                ErrorCodes.PROVISIONING_WORKFLOW_UNSUPPORTED);
         }
     }
 
@@ -492,7 +492,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
         if (!TryParseNonEmptyGuid(state.BlueprintObjectId, out _) ||
             !TryParseNonEmptyGuid(state.BlueprintClientId, out _) ||
             !TryParseNonEmptyGuid(state.BlueprintPrincipalObjectId, out _) ||
-            !TryParseNonEmptyGuid(state.GatewayManagedIdentityPrincipalId, out _) ||
+            !TryParseNonEmptyGuid(state.GatewayWorkloadPrincipalId, out _) ||
             !IsSafeDependencyIdentifier(state.GatewayFederatedCredentialId) ||
             !TryParseNonEmptyGuid(state.AgentIdentityObjectId, out _) ||
             !TryParseNonEmptyGuid(state.AgentIdentityClientId, out _) ||
@@ -576,7 +576,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
         Preserves(previous.AgentIdentityObjectId, current.AgentIdentityObjectId) &&
         Preserves(previous.AgentIdentityClientId, current.AgentIdentityClientId) &&
         Preserves(previous.ObservabilityAppRoleAssignmentId, current.ObservabilityAppRoleAssignmentId) &&
-        Preserves(previous.GatewayManagedIdentityPrincipalId, current.GatewayManagedIdentityPrincipalId) &&
+        Preserves(previous.GatewayWorkloadPrincipalId, current.GatewayWorkloadPrincipalId) &&
         Preserves(previous.GatewayFederatedCredentialId, current.GatewayFederatedCredentialId) &&
         Preserves(previous.Agent365RegistrationId, current.Agent365RegistrationId);
 

@@ -17,4 +17,5 @@ public sealed record PurviewInteraction(
     string AgentName,
     DateTime OccurredAtUtc,
     PurviewExecutionMode ExecutionMode,
-    string CorrelationId);
+    string CorrelationId,
+    bool UseAgentIdentity = false);

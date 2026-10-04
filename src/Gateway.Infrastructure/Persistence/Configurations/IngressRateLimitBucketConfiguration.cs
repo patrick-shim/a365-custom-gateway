@@ -19,8 +19,8 @@ internal sealed class IngressRateLimitBucketConfiguration : IEntityTypeConfigura
         // The limiter uses atomic SQL, but its table must also be in the exact bootstrap model.
         builder.ToTable("IngressRateLimitBuckets", table =>
         {
-            table.HasCheckConstraint("CK_IngressRateLimitBuckets_ScopeType", "[ScopeType] IN (0, 1, 2)");
-            table.HasCheckConstraint("CK_IngressRateLimitBuckets_RequestCount", "[RequestCount] >= 0");
+            table.HasCheckConstraint("CK_IngressRateLimitBuckets_ScopeType", "\"ScopeType\" IN (0, 1, 2)");
+            table.HasCheckConstraint("CK_IngressRateLimitBuckets_RequestCount", "\"RequestCount\" >= 0");
         });
         builder.HasKey(bucket => new { bucket.ScopeType, bucket.ScopeId });
         builder.Property(bucket => bucket.WindowStartUtc).HasPrecision(0);

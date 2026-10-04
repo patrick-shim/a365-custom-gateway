@@ -20,22 +20,12 @@ internal static class SystemConfigMapper
         var destinations = observabilityMode.ToDestinations();
 
         return new SystemConfigDto(
-            config.ProvisioningMode,
+            "Automatic",
             config.DefaultObservabilityMode,
-            config.DefaultPurviewEnabled,
-            config.DefaultPurviewMode,
-            config.RetentionDaysActivityReceipts,
-            config.RetentionDaysAuditEvents,
             config.RetentionDaysIdempotencyRecords,
-            config.RetentionDaysOutboxMessages,
             config.RateLimitPerClient,
             config.RateLimitPerAgent,
             config.RateLimitGlobal,
-            config.ReconciliationEnabled,
-            config.ReconciliationIntervalHours,
-            config.StuckTransitionTimeoutDays,
-            config.UseGraphAgentRegistration,
-            config.UseCliProvisioningFallback,
             destinations.Agent365ObservabilityEnabled,
             destinations.AzureMonitorExportEnabled,
             DefaultPromptShieldEnabled: config.DefaultPromptShieldEnabled,

@@ -76,27 +76,7 @@ internal static class ProtectionRequestHeaderValidation
     {
         if (string.Equals(value, "*", StringComparison.Ordinal))
             return true;
-        if (string.IsNullOrWhiteSpace(value) ||
-            value.Length > 128 ||
-            value.Contains('\r') ||
-            value.Contains('\n'))
-        {
-            return false;
-        }
-
-        try
-        {
-            var decoded = Convert.FromBase64String(value);
-            return decoded.Length == 8 &&
-                string.Equals(
-                    Convert.ToBase64String(decoded),
-                    value,
-                    StringComparison.Ordinal);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        return RowVersionValidation.IsCanonical(value);
     }
 
     private static PreconditionFailedException Precondition() =>

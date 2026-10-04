@@ -145,8 +145,6 @@ internal static class IdempotencyRequestHasher
             request.Agent365ObservabilityEnabled,
             request.AzureMonitorExportEnabled,
             request.PromptShieldEnabled,
-            request.PurviewDlpProfile,
-            request.PurviewConfigurationIntent,
             request.CallerTenantId,
             request.CallerObjectId,
             request.ExpectedRowVersion

@@ -22,16 +22,13 @@ public class AgentsController : ControllerBase
 {
     private readonly ISender _sender;
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
-    private readonly IProtectionAdminOperationLockProvider? _protectionLocks;
 
     public AgentsController(
         ISender sender,
-        ProvisioningAdmissionGate provisioningAdmissionGate,
-        IProtectionAdminOperationLockProvider? protectionLocks = null)
+        ProvisioningAdmissionGate provisioningAdmissionGate)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
-        _protectionLocks = protectionLocks;
     }
 
     [HttpPost]
@@ -59,13 +56,9 @@ public class AgentsController : ControllerBase
             request.Features,
             callerObjectId,
             request.Blueprint,
-            request.PurviewPolicyProfile,
-            request.PurviewDlpProfile,
-            request.PurviewConfigurationIntent,
             actor.TenantId);
 
-        var result = await ExecuteConfigurationMutationAsync(request.PurviewConfigurationIntent, actor,
-            () => _sender.Send(command, cancellationToken), cancellationToken);
+        var result = await _sender.Send(command, cancellationToken);
 
         Response.Headers.CacheControl = "no-store";
         Response.Headers.Pragma = "no-cache";
@@ -181,8 +174,6 @@ public class AgentsController : ControllerBase
             request.PurviewEnabled is not null ||
             request.PurviewMode is not null ||
             request.PromptShieldEnabled is not null ||
-            request.PurviewDlpProfile is not null ||
-            request.PurviewConfigurationIntent is not null ||
             request.IdempotencyKey is not null ||
             request.ExpectedRowVersion is not null;
         ProtectionActor? protectionActor = null;
@@ -215,38 +206,13 @@ public class AgentsController : ControllerBase
             request.Agent365ObservabilityEnabled,
             request.AzureMonitorExportEnabled,
             request.PromptShieldEnabled,
-            request.PurviewDlpProfile,
             request.IdempotencyKey,
             request.ExpectedRowVersion,
-            request.PurviewConfigurationIntent,
             protectionActor?.TenantId);
 
-        var result = await ExecuteConfigurationMutationAsync(request.PurviewConfigurationIntent, protectionActor,
-            () => _sender.Send(command, cancellationToken), cancellationToken);
+        var result = await _sender.Send(command, cancellationToken);
 
         return Ok(result);
-    }
-
-    private async Task<T> ExecuteConfigurationMutationAsync<T>(PurviewConfigurationIntentDto? intent,
-        ProtectionActor? actor, Func<Task<T>> action, CancellationToken ct)
-    {
-        if (intent is null)
-            return await action();
-        if (intent.ConfirmationTokenId == Guid.Empty || intent.IdempotencyKey == Guid.Empty ||
-            string.IsNullOrWhiteSpace(intent.ConfirmationToken) ||
-            string.IsNullOrWhiteSpace(intent.ExpectedRowVersion))
-            throw new Gateway.Application.Exceptions.ValidationException(new Dictionary<string, string[]>
-            {
-                ["PurviewConfigurationIntent"] = ["A complete confirmed operation and idempotency binding is required."]
-            });
-        if (_protectionLocks is null || actor is null)
-            throw new Gateway.Application.Exceptions.ProtectionAccessDeniedException();
-        await using var execution = await _protectionLocks.AcquireExecutionAsync(intent.ConfirmationTokenId, ct);
-        await using var idempotency = await _protectionLocks.AcquireIdempotencyAsync(
-            new EntraTenantId(actor.TenantId), new ProtectionIdempotencyKey(intent.IdempotencyKey), ct);
-        var result = await action();
-        await idempotency.CompleteAsync(ct);
-        return result;
     }
 
     [HttpPost("{agentId:guid}:enable")]

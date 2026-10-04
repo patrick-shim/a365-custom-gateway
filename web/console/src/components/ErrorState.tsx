@@ -48,6 +48,7 @@ export function ErrorState({ error, onRetry, title = "Could not load this inform
         {challenge?.kind === "consent" && <Caption1 block>
           A tenant administrator must consent to the Gateway API's delegated Graph permissions.
           Signing in to the Console does not grant those permissions.
+          {" "}Run gateway up from the installation folder to repair and verify bootstrap consent, then retry registration.
           {challenge.scopes.length > 0 && ` Required: ${challenge.scopes.join(", ")}.`}
         </Caption1>}
         {challenge?.kind === "unavailable" && <Caption1 block>
@@ -55,7 +56,7 @@ export function ErrorState({ error, onRetry, title = "Could not load this inform
         </Caption1>}
         {authorizationUpdated ? <Caption1 block role="status">
           Authorization updated. Check the current operation before confirming again; no action was repeated.
-        </Caption1> : needsSignIn && challenge?.kind !== "unavailable" ? (
+        </Caption1> : needsSignIn && challenge?.kind !== "unavailable" && challenge?.kind !== "consent" ? (
           <Button style={{ marginTop: 8 }} disabled={signingIn} onClick={() => void signIn()}>
             {challenge?.kind === "claims" ? "Continue sign-in" : "Sign in again"}
           </Button>

@@ -1,4 +1,5 @@
 using FluentValidation;
+using Gateway.Contracts;
 using Gateway.Application.Agents.Commands;
 using Gateway.Domain.Enums;
 
@@ -37,7 +38,7 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
 
         RuleFor(x => x.Features)
             .Must(HaveCompatibleObservabilitySettings)
-            .WithMessage("Legacy and destination-specific observability settings must describe the same destinations.")
+            .WithMessage("Combined and destination-specific observability settings must describe the same destinations.")
             .When(x => x.Features is not null);
 
         RuleFor(x => x.Features!.PurviewMode)
@@ -77,79 +78,10 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
             });
         });
 
-        RuleFor(x => x.PurviewPolicyProfile)
-            .Must(selection => selection is null)
-            .WithMessage("PurviewPolicyProfile is only valid when Purview is enabled for a new blueprint.")
-            .When(x => x.Blueprint?.Mode != "CreateNew" || x.Features?.PurviewEnabled != true);
-
-        RuleFor(x => x.PurviewDlpProfile!.ProfileId)
-            .NotEmpty()
-            .When(x => x.PurviewDlpProfile is not null);
-        RuleFor(x => x.PurviewDlpProfile!.BlueprintApplicationId)
-            .NotEmpty()
-            .When(x => x.PurviewDlpProfile is not null);
-        RuleFor(x => x.PurviewDlpProfile!.ExpectedProfileRowVersion)
-            .Must(BeExpectedRowVersion)
-            .When(x =>
-                x.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
-        RuleFor(x => x.Features!.PurviewDlpProfile!.ProfileId)
-            .NotEmpty()
-            .When(x => x.Features?.PurviewDlpProfile is not null);
-        RuleFor(x => x.Features!.PurviewDlpProfile!.BlueprintApplicationId)
-            .NotEmpty()
-            .When(x => x.Features?.PurviewDlpProfile is not null);
-        RuleFor(x => x.Features!.PurviewDlpProfile!.ExpectedProfileRowVersion)
-            .Must(BeExpectedRowVersion)
-            .When(x =>
-                x.Features?.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
-        RuleFor(x => x)
-            .Must(HaveMatchingDlpSelections)
-            .WithMessage("Top-level and feature DLP profile selections must match.");
-        RuleFor(x => x.PurviewDlpProfile)
-            .Null()
-            .When(x => x.Features?.PurviewEnabled == false)
-            .WithMessage("PurviewDlpProfile cannot be selected while Purview is disabled.");
-
-        When(
-            x => x.Blueprint?.Mode == "CreateNew" && x.Features?.PurviewEnabled == true &&
-                x.PurviewConfigurationIntent is null,
-            () =>
-            {
-                RuleFor(x => x.PurviewPolicyProfile)
-                    .NotNull()
-                    .WithMessage("Select an existing Purview profile or create a new one.");
-
-                When(x => x.PurviewPolicyProfile is not null, () =>
-                {
-                    RuleFor(x => x.PurviewPolicyProfile!.Mode)
-                        .Must(mode => mode is "UseExisting" or "CreateNew")
-                        .WithMessage("Purview profile mode must be UseExisting or CreateNew.");
-
-                    When(x => x.PurviewPolicyProfile!.Mode == "UseExisting", () =>
-                    {
-                        RuleFor(x => x.PurviewPolicyProfile!.ProfileId)
-                            .NotNull()
-                            .Must(id => id is { } value && value != Guid.Empty)
-                            .WithMessage("Select an existing Purview profile.");
-                        RuleFor(x => x.PurviewPolicyProfile!.DisplayName)
-                            .Must(string.IsNullOrWhiteSpace)
-                            .WithMessage("DisplayName is only valid when creating a Purview profile.");
-                    });
-
-                    When(x => x.PurviewPolicyProfile!.Mode == "CreateNew", () =>
-                    {
-                        RuleFor(x => x.PurviewPolicyProfile!.ProfileId)
-                            .Null()
-                            .WithMessage("ProfileId is only valid when selecting an existing Purview profile.");
-                        RuleFor(x => x.PurviewPolicyProfile!.DisplayName)
-                            .NotEmpty()
-                            .MaximumLength(120);
-                        RuleFor(x => x.PurviewPolicyProfile!.Template)
-                            .Equal("AllSensitiveInformation")
-                            .WithMessage("Only the reviewed AllSensitiveInformation template is currently supported.");
-                    });
-                });
-            });
+        RuleFor(x => x.Features!.PurviewEnabled)
+            .NotEqual(true)
+            .When(x => x.Features is not null)
+            .WithMessage("Register the agent first, then assign an existing Purview policy to it.");
     }
 
     private static bool BeValidAgentEnvironment(string env) =>
@@ -180,28 +112,4 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
             out _);
     }
 
-    private static bool HaveMatchingDlpSelections(RegisterAgentCommand command) =>
-        command.PurviewDlpProfile is null ||
-        command.Features?.PurviewDlpProfile is null ||
-        command.PurviewDlpProfile ==
-        command.Features.PurviewDlpProfile;
-
-    private static bool BeExpectedRowVersion(string? value)
-    {
-        if (value is null)
-            return true;
-        try
-        {
-            var decoded = Convert.FromBase64String(value);
-            return decoded.Length == 8 &&
-                string.Equals(
-                    Convert.ToBase64String(decoded),
-                    value,
-                    StringComparison.Ordinal);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-    }
 }

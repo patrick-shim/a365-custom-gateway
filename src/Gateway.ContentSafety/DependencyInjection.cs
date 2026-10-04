@@ -18,7 +18,7 @@ public static class DependencyInjection
         // The options validator uses this binding's attestation check. Defer the
         // actual options lookup until effective readiness, after validation.
         services.AddSingleton<BootstrapPromptShieldRuntimeBinding>(serviceProvider =>
-            new BootstrapPromptShieldRuntimeBinding(configuration, () =>
+            new BootstrapPromptShieldRuntimeBinding(() =>
                 serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value));
         services.AddSingleton<IBootstrapPromptShieldRuntimeBinding>(serviceProvider =>
             serviceProvider.GetRequiredService<BootstrapPromptShieldRuntimeBinding>());
@@ -26,6 +26,7 @@ public static class DependencyInjection
         services.AddSingleton<IPromptShieldTokenProvider>(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;
+            if (!options.Enabled) return new DisabledPromptShieldTokenProvider();
             if (options.UsesApiKey)
             {
                 return new ApiKeyPromptShieldTokenProvider(
@@ -38,8 +39,7 @@ public static class DependencyInjection
                     serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>());
             }
 
-            return new ManagedIdentityPromptShieldTokenProvider(
-                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>());
+            throw new InvalidOperationException("Unsupported Prompt Shields authentication mode.");
         });
         services.AddHttpClient(nameof(PromptShieldClient), (serviceProvider, client) =>
         {
@@ -56,9 +56,13 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IHttpClientFactory>()
                     .CreateClient(nameof(PromptShieldClient)),
                 serviceProvider.GetRequiredService<IPromptShieldTokenProvider>(),
-                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>(),
-                serviceProvider.GetRequiredService<BootstrapPromptShieldRuntimeBinding>()));
+                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>()));
 
         return services;
+    }
+    private sealed class DisabledPromptShieldTokenProvider : IPromptShieldTokenProvider
+    {
+        public ValueTask<Azure.Core.AccessToken> GetTokenAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Prompt Shields is disabled.");
     }
 }

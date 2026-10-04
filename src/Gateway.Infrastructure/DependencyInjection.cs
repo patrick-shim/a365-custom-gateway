@@ -1,15 +1,11 @@
 using Amazon.Runtime;
 using Amazon.S3;
-using Azure.Identity;
-using Azure.Messaging.ServiceBus;
-using Azure.Storage.Blobs;
 using Gateway.Application.Configuration;
 using Gateway.Domain.Interfaces;
 using Gateway.Infrastructure.Messaging;
 using Gateway.Infrastructure.Outbox;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Infrastructure.Persistence.Repositories;
-using Gateway.Infrastructure.ServiceBus;
 using Gateway.Infrastructure.Security;
 using Gateway.Infrastructure.Services;
 using Gateway.Infrastructure.Storage;
@@ -26,20 +22,11 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        var provider = InfrastructureProvider.Resolve(configuration);
-        if (provider == InfrastructureProvider.Portable)
-            AddPortablePersistence(services, configuration);
-        else
-            AddAzurePersistence(services, configuration);
+        _ = InfrastructureProvider.Resolve(configuration);
+        AddRuntimePersistence(services, configuration);
 
         services.AddMemoryCache();
-        services
-            .AddOptions<DatabaseAttestationOptions>()
-            .Bind(configuration.GetSection(DatabaseAttestationOptions.SectionName));
-        services.AddSingleton<IValidateOptions<DatabaseAttestationOptions>, DatabaseAttestationOptionsValidator>();
         services.AddScoped<IDatabaseHealthProbe, DatabaseHealthProbe>();
-        services.AddScoped<IDatabaseBootstrapAttestationProbe, DatabaseBootstrapAttestationProbe>();
-        services.AddScoped<IDatabaseBootstrapAttestationService, DatabaseBootstrapAttestationService>();
 
         services.AddScoped<IAgentRepository, AgentRegistrationRepository>();
         services.AddScoped<IProvisioningJobRepository, ProvisioningJobRepository>();
@@ -53,26 +40,11 @@ public static class DependencyInjection
         services.AddSingleton<IngressRateLimitProcessStore>();
         services.AddScoped<IIngressRateLimiter, SqlIngressRateLimiter>();
         services.AddScoped<ISystemConfigurationRepository, SystemConfigurationRepository>();
-        services.AddScoped<IPurviewPolicyProfileRepository, PurviewPolicyProfileRepository>();
         services.AddScoped<IPromptEvaluationRepository, PromptEvaluationRepository>();
-        services.AddScoped<IProtectionCapabilityRepository, ProtectionCapabilityRepository>();
+        services.AddScoped<ISystemConfigurationMutationRepository, SystemConfigurationMutationRepository>();
         services.AddScoped<
-            IBootstrapProtectionCapabilityStore,
-            BootstrapProtectionCapabilityStore>();
-        services.AddScoped<IPurviewTenantConnectionRepository, PurviewTenantConnectionRepository>();
-        services.AddScoped<
-            IPurviewSensitiveInformationTypeSnapshotRepository,
-            PurviewSensitiveInformationTypeSnapshotRepository>();
-        services.AddScoped<
-            IPurviewKnowYourDataConfigurationRepository,
-            PurviewKnowYourDataConfigurationRepository>();
-        services.AddScoped<IPurviewDlpProfileRepository, PurviewDlpProfileRepository>();
-        services.AddScoped<IProtectionAdminOperationRepository, ProtectionAdminOperationRepository>();
-        services.AddScoped<IPurviewRuntimeTestRepository, PurviewRuntimeTestRepository>();
-        services.AddScoped<IProtectionProfileMutationGuard, ProtectionProfileMutationGuard>();
-        services.AddScoped<
-            IProtectionAdminOperationLockProvider,
-            ProtectionAdminOperationLockProvider>();
+            ISystemConfigurationLockProvider,
+            SystemConfigurationLockProvider>();
         services
             .AddOptions<AgentIngressCredentialOptions>()
             .Bind(configuration.GetSection(AgentIngressCredentialOptions.SectionName))
@@ -82,10 +54,7 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddScoped<IAgentIngressCredentialService, AgentIngressCredentialService>();
 
-        if (provider == InfrastructureProvider.Portable)
-            AddPortableMessagingAndStorage(services, configuration);
-        else
-            AddAzureMessagingAndStorage(services, configuration);
+        AddRuntimeMessagingAndStorage(services, configuration);
 
         services.Configure<OutboxRelayOptions>(
             configuration.GetSection("OutboxRelay"));
@@ -94,68 +63,19 @@ public static class DependencyInjection
         return services;
     }
 
-    private static void AddAzurePersistence(IServiceCollection services, IConfiguration configuration)
-    {
-        services.AddDbContext<GatewayDbContext>(options =>
-            options.UseSqlServer(configuration.GetConnectionString("GatewayDb")));
-    }
-
-    private static void AddPortablePersistence(IServiceCollection services, IConfiguration configuration)
+    private static void AddRuntimePersistence(IServiceCollection services, IConfiguration configuration)
     {
         var connectionString = configuration.GetConnectionString("GatewayDb")
             ?? throw new InvalidOperationException(
-                "Portable infrastructure requires ConnectionStrings:GatewayDb (PostgreSQL).");
+                "Runtime infrastructure requires ConnectionStrings:GatewayDb (PostgreSQL).");
 
         services.AddDbContext<GatewayDbContext>(options =>
             options.UseNpgsql(connectionString)
                 .AddInterceptors(new PostgresRowVersionInterceptor()));
-        services.AddHostedService<PortableSchemaInitializer>();
+        services.AddHostedService<RuntimeSchemaInitializer>();
     }
 
-    private static void AddAzureMessagingAndStorage(
-        IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.Configure<BlobStorageOptions>(
-            configuration.GetSection("BlobStorage"));
-
-        services.AddSingleton(sp =>
-        {
-            var options = sp.GetRequiredService<IOptions<BlobStorageOptions>>().Value;
-            if (!string.IsNullOrEmpty(options.ConnectionString))
-                return new BlobServiceClient(options.ConnectionString);
-            return new BlobServiceClient(
-                new Uri(options.ServiceUri!),
-                new DefaultAzureCredential());
-        });
-
-        services.AddScoped<IInteractionContentStore, BlobInteractionContentStore>();
-
-        services.Configure<ServiceBusOptions>(
-            configuration.GetSection("ServiceBus"));
-
-        services.AddSingleton(sp =>
-        {
-            var options = sp.GetRequiredService<IOptions<ServiceBusOptions>>().Value;
-            if (!string.IsNullOrWhiteSpace(options.ConnectionString))
-                return new ServiceBusClient(options.ConnectionString);
-
-            if (!string.IsNullOrWhiteSpace(options.FullyQualifiedNamespace))
-            {
-                return new ServiceBusClient(
-                    options.FullyQualifiedNamespace,
-                    new DefaultAzureCredential());
-            }
-
-            throw new InvalidOperationException(
-                "Configure ServiceBus:ConnectionString for local development or " +
-                "ServiceBus:FullyQualifiedNamespace for managed identity.");
-        });
-
-        services.AddSingleton<IOutboxQueuePublisher, ServiceBusPublisher>();
-    }
-
-    private static void AddPortableMessagingAndStorage(
+    private static void AddRuntimeMessagingAndStorage(
         IServiceCollection services,
         IConfiguration configuration)
     {
@@ -191,7 +111,7 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(RabbitMqOptions.SectionName))
             .Validate(
                 options => !string.IsNullOrWhiteSpace(options.ConnectionUri),
-                "RabbitMq:ConnectionUri is required for portable infrastructure.")
+                "RabbitMq:ConnectionUri is required for runtime infrastructure.")
             .ValidateOnStart();
         services.AddSingleton<IOutboxQueuePublisher, RabbitMqOutboxPublisher>();
     }

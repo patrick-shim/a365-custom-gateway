@@ -9,7 +9,4 @@ public record RegisterAgentRequest(
     string OwnerObjectId,
     string Environment,
     AgentFeaturesDto? Features,
-    AgentBlueprintSelectionDto? Blueprint = null,
-    PurviewPolicyProfileSelectionDto? PurviewPolicyProfile = null,
-    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
-    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null);
+    AgentBlueprintSelectionDto? Blueprint = null);

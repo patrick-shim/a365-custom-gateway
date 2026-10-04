@@ -16,7 +16,7 @@ internal sealed record RepositoryLayout(string RootPath)
         while (directory is not null)
         {
             var bootstrapScript = Path.Combine(directory.FullName, "bootstrap", "bootstrap.ps1");
-            var solution = Path.Combine(directory.FullName, "src", "A365Gateway.slnx");
+            var solution = Path.Combine(directory.FullName, "Gateway.slnx");
             if (File.Exists(bootstrapScript) && File.Exists(solution))
             {
                 return new RepositoryLayout(directory.FullName);

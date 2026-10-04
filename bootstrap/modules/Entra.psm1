@@ -2,13 +2,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:GraphAppId = '00000003-0000-0000-c000-000000000000'
-$script:KeyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 $script:PurviewExchangeOnlineAppId = '00000002-0000-0ff1-ce00-000000000000'
 $script:PurviewExchangeManageAsAppRoleId = 'dc50a0fb-09a3-484d-be87-e023b12c6440'
-$script:PurviewLegacyProtectionAppId = '00000007-0000-0ff1-ce00-000000000000'
-$script:PurviewLegacyProtectionRoleId = '455e5cd2-84e8-4751-8344-5672145dfa17'
-$script:PurviewComplianceAdministratorRoleDefinitionId = '17315797-102d-40b4-93e0-432062caca18'
-$script:PurviewCertificateCredentialDays = 364
 
 function Get-ExactApplicationByDisplayName {
     param([Parameter(Mandatory)][string]$DisplayName)
@@ -63,15 +58,15 @@ function Assert-GatewayApplicationNamespacePlanBoundary {
     )
 
     # Limited read-only Plan preflight, not adoption or application readiness.
-    # Apply/Resume must still independently verify full shape, owners, principals
+    # Apply/Up must still independently verify full shape, owners, principals
     # and grants; this check neither reserves the namespace nor repairs anything.
     try {
         $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
         if ($Config.purview.enabled -isnot [bool]) { throw 'Unknown optional capability selection.' }
         $suffix = "$($Config.projectName)-$($Config.environment)"
         $apiName = "A365 Gateway API - $suffix"
-        $names = @($apiName, "A365 Gateway Console - $suffix", "A365 Gateway Admin UI - $suffix")
-        if ($Config.purview.enabled) { $names += "A365 Gateway Purview Automation - $suffix" }
+        $names = @($apiName, "A365 Gateway Console - $suffix", "A365 Gateway Workload - $suffix")
+        if ($Config.purview.enabled) { $names += "A365 Gateway Purview Policies - $suffix" }
         $apiObjectId = ''
         foreach ($name in $names) {
             $application = Get-ExactApplicationByDisplayName -DisplayName $name
@@ -111,27 +106,6 @@ function Invoke-GraphJsonBody {
     param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Body)
     $json = $Body | ConvertTo-Json -Depth 30 -Compress
     return Invoke-AzJson -Arguments @('rest', '--method', $Method, '--url', $Url, '--headers', 'Content-Type=application/json', '--body', $json)
-}
-
-function Invoke-AzJsonArray {
-    param(
-        [Parameter(Mandatory)][string[]]$Arguments,
-        [Parameter(Mandatory)][string]$OperationLabel
-    )
-    $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList ($Arguments + @('--output', 'json', '--only-show-errors'))
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        throw "$OperationLabel returned no JSON array; absence was not proven."
-    }
-    try {
-        $parsed = ConvertFrom-Json -InputObject $raw -Depth 100 -NoEnumerate -ErrorAction Stop
-    }
-    catch {
-        throw "$OperationLabel returned malformed JSON; absence was not proven."
-    }
-    if ($parsed -isnot [System.Array]) {
-        throw "$OperationLabel returned a non-array JSON contract; absence was not proven."
-    }
-    return $parsed
 }
 
 function Get-BoundedGraphCollection {
@@ -387,76 +361,6 @@ function Get-BootstrapApplicationTags {
     )
 }
 
-function Get-AdminUiGatewayApplicationRoles {
-    param([Parameter(Mandatory)][string]$DeploymentOwnershipId)
-
-    Assert-GuidValue -Value $DeploymentOwnershipId -Label 'Deployment ownership identifier'
-    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
-    $contracts = @(
-        [ordered]@{
-            displayName = 'Gateway Administrator'
-            description = 'Full Gateway control-plane administration.'
-            canonicalValue = 'Gateway.Administrator'
-            value = 'Administrator'
-        },
-        [ordered]@{
-            displayName = 'Gateway Operator'
-            description = 'Operate registrations and provisioning.'
-            canonicalValue = 'Gateway.Operator'
-            value = 'Operator'
-        },
-        [ordered]@{
-            displayName = 'Gateway Auditor'
-            description = 'Read Gateway audit and configuration state.'
-            canonicalValue = 'Gateway.Auditor'
-            value = 'Auditor'
-        },
-        [ordered]@{
-            displayName = 'Gateway Support Reader'
-            description = 'Read redacted health and diagnostics.'
-            canonicalValue = 'Gateway.SupportReader'
-            value = 'Reader'
-        }
-    )
-    return @($contracts | ForEach-Object {
-        [ordered]@{
-            id = Get-BootstrapDeterministicGuid -Material "a365gw-bootstrap-admin-ui-role-v1|$canonicalOwnershipId|$($_.canonicalValue)"
-            displayName = [string]$_.displayName
-            description = [string]$_.description
-            value = [string]$_.value
-            allowedMemberTypes = @('User')
-            isEnabled = $true
-        }
-    })
-}
-
-function Assert-ExactAdminUiGatewayRoleContract {
-    param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$AppRoles,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId
-    )
-
-    $expectedRoles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $DeploymentOwnershipId)
-    if ($AppRoles.Count -ne $expectedRoles.Count) {
-        throw 'Admin UI application must publish exactly the four canonical user-only Gateway roles.'
-    }
-    foreach ($expectedRole in $expectedRoles) {
-        $matches = @($AppRoles | Where-Object {
-            ([string]$_.id).Equals([string]$expectedRole.id, [StringComparison]::OrdinalIgnoreCase)
-        })
-        if ($matches.Count -ne 1 -or
-            [string]$matches[0].displayName -cne [string]$expectedRole.displayName -or
-            [string]$matches[0].description -cne [string]$expectedRole.description -or
-            [string]$matches[0].value -cne [string]$expectedRole.value -or
-            $matches[0].isEnabled -isnot [bool] -or $matches[0].isEnabled -ne $true -or
-            @($matches[0].allowedMemberTypes).Count -ne 1 -or
-            [string]$matches[0].allowedMemberTypes[0] -cne 'User') {
-            throw 'Admin UI application must publish exactly the four canonical user-only Gateway roles.'
-        }
-    }
-    return $expectedRoles
-}
-
 function Test-ExactStringSet {
     param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Actual, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Expected)
     $actualSorted = @($Actual | Sort-Object -Unique)
@@ -518,6 +422,18 @@ function Get-UniqueGraphPermissionId {
     return [string]$published[0].id
 }
 
+function Test-GatewayApiPasswordCredentialBoundary {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Credentials)
+    if ($Credentials.Count -eq 0) { return $true }
+    if ($Credentials.Count -ne 1) { return $false }
+    $credential = $Credentials[0]
+    $expiry = [DateTimeOffset]::MinValue
+    $keyId = [guid]::Empty
+    return [string]$credential.displayName -ceq 'a365gw-bootstrap-runtime-api-obo' -and
+        [guid]::TryParse([string]$credential.keyId, [ref]$keyId) -and $keyId -ne [guid]::Empty -and
+        [DateTimeOffset]::TryParse([string]$credential.endDateTime, [ref]$expiry) -and $expiry -gt [DateTimeOffset]::UtcNow
+}
+
 function Assert-GatewayApiDelegatedPermissionBoundary {
     param(
         [Parameter(Mandatory)]$Identity,
@@ -533,7 +449,7 @@ function Assert-GatewayApiDelegatedPermissionBoundary {
     )
     Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Gateway API application' | Out-Null
     if ([string]$application.appId -ne [string]$Identity.gatewayApiClientId -or
-        @($application.passwordCredentials).Count -ne 0 -or
+        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials)) -or
         @($application.keyCredentials).Count -ne 0 -or
         @($application.web.redirectUris).Count -ne 0 -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
@@ -580,59 +496,73 @@ function Assert-GatewayApiDelegatedPermissionBoundary {
     return $true
 }
 
+function Ensure-GatewayApiDelegatedRegistryConsent {
+    param([Parameter(Mandatory)]$Identity, [switch]$ReconcileOnly)
+
+    # Call only after application/principal ownership has been verified.
+    # Reject broader or ambiguous grants before making any tenant change.
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity | Out-Null
+    if ($ReconcileOnly) {
+        Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
+        return
+    }
+    $graph = (Get-GraphPermissionCatalog).servicePrincipal
+    $requiredValues = @('AgentRegistration.Read.All', 'AgentRegistration.ReadWrite.All')
+    $access = @($requiredValues | ForEach-Object {
+        @{ id = Get-UniqueGraphPermissionId -Graph $graph -Value $_ -Type Scope; type = 'Scope' }
+    })
+    Invoke-GraphJsonBody -Method PATCH -Url "https://graph.microsoft.com/v1.0/applications/$($Identity.gatewayApiApplicationObjectId)" -Body @{
+        requiredResourceAccess = @(@{ resourceAppId = $script:GraphAppId; resourceAccess = $access })
+    } | Out-Null
+    $grantUrl = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($Identity.gatewayApiServicePrincipalId)'&`$select=id,clientId,resourceId,consentType,scope"
+    $grants = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity | Out-Null
+    if ($grants.Count -eq 0) {
+        Invoke-GraphJsonBody -Method POST -Url 'https://graph.microsoft.com/v1.0/oauth2PermissionGrants' -Body @{
+            clientId = [string]$Identity.gatewayApiServicePrincipalId
+            resourceId = [string]$graph.id
+            consentType = 'AllPrincipals'
+            scope = $requiredValues -join ' '
+        } | Out-Null
+    } elseif ($grants.Count -eq 1) {
+        $existing = @(([string]$grants[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries))
+        if (-not (Test-ExactStringSet -Actual $existing -Expected $requiredValues)) {
+            Invoke-GraphJsonBody -Method PATCH -Url "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($grants[0].id)" -Body @{
+                scope = $requiredValues -join ' '
+            } | Out-Null
+        }
+    } else { throw 'Gateway API delegated consent changed during setup; review its exact permission boundary.' }
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
+}
+
 function Assert-GraphApplicationRoleAssignmentBoundary {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues,
-        [switch]$RequireComplete,
-        [AllowNull()][Collections.IDictionary]$PurviewExecutorContext
+        [switch]$RequireComplete
     )
     $graph = (Get-GraphPermissionCatalog).servicePrincipal
     $expectedIds = @($ExpectedRoleValues | ForEach-Object { Get-UniqueGraphPermissionId -Graph $graph -Value $_ -Type Role })
-    $executorGrant = if ($null -ne $PurviewExecutorContext) {
-        Get-PurviewExecutorWorkerGrant -VerificationContext $PurviewExecutorContext -PrincipalId $PrincipalId
-    } else { $null }
-    if ($null -ne $executorGrant) {
-        $workerRoles = @(
-            'Application.Read.All', 'AppRoleAssignment.ReadWrite.All',
-            'AgentIdentityBlueprint.Create', 'AgentIdentityBlueprint.AddRemoveCreds.All',
-            'AgentIdentityBlueprintPrincipal.Create', 'AgentIdentityBlueprint.Read.All',
-            'AgentIdentity.Create.All', 'AgentIdentity.Read.All'
-        )
-        if ($ExpectedRoleValues.Count -ne 8 -or
-            -not (Test-ExactStringSet -Actual $ExpectedRoleValues -Expected $workerRoles) -or
-            [string]$executorGrant.resourceId -ieq [string]$graph.id) {
-            throw 'Executor grant verification is restricted to the exact eight-role worker boundary.'
-        }
-    }
     $assignments = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals/$PrincipalId/appRoleAssignments?`$select=id,principalId,resourceId,appRoleId")
     if (@($assignments | Where-Object { [string]$_.principalId -ine $PrincipalId }).Count -ne 0) {
-        throw 'Managed identity has an application-role assignment outside the exact reviewed principal boundary.'
+        throw 'Workload identity has an application-role assignment outside the exact reviewed principal boundary.'
     }
     $graphAssignments = @($assignments | Where-Object { [string]$_.resourceId -ieq [string]$graph.id })
     $otherAssignments = @($assignments | Where-Object { [string]$_.resourceId -ine [string]$graph.id })
-    if ($null -eq $executorGrant -and $otherAssignments.Count -ne 0) {
-        throw 'Managed identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
-    }
-    if ($null -ne $executorGrant) {
-        if ($otherAssignments.Count -ne 1) { throw 'Worker must have exactly one independently verified executor grant.' }
-        foreach ($field in @('id', 'principalId', 'resourceId', 'appRoleId')) {
-            if ([string]$otherAssignments[0].$field -cne [string]$executorGrant[$field]) {
-                throw 'Worker executor application-role assignment differs from exact owned authority.'
-            }
-        }
+    if ($otherAssignments.Count -ne 0) {
+        throw 'Workload identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
     }
     if (@($graphAssignments | Where-Object {
         [string]$_.appRoleId -notin $expectedIds
     }).Count -gt 0) {
-        throw 'Managed identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
+        throw 'Workload identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
     }
     $actualIds = @($graphAssignments | ForEach-Object { [string]$_.appRoleId })
     if (@($actualIds | Sort-Object -Unique).Count -ne $actualIds.Count) {
-        throw 'Managed identity has duplicate Microsoft Graph application-role assignments.'
+        throw 'Workload identity has duplicate Microsoft Graph application-role assignments.'
     }
     if ($RequireComplete -and -not (Test-ExactStringSet -Actual $actualIds -Expected $expectedIds)) {
-        throw 'Managed identity Microsoft Graph application roles do not exactly match the reviewed allowlist.'
+        throw 'Workload identity Microsoft Graph application roles do not exactly match the reviewed allowlist.'
     }
     return $true
 }
@@ -640,30 +570,9 @@ function Assert-GraphApplicationRoleAssignmentBoundary {
 function Assert-ExactGraphApplicationRoleAssignments {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues,
-        [AllowNull()][Collections.IDictionary]$PurviewExecutorContext
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues
     )
-    return Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $PrincipalId -ExpectedRoleValues $ExpectedRoleValues -RequireComplete -PurviewExecutorContext $PurviewExecutorContext
-}
-
-function Assert-GatewayFederatedCredentialBoundary {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity,
-        [Parameter(Mandatory)][string]$ApiPrincipalId,
-        [switch]$AllowMissing
-    )
-
-    $ficName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
-    $fics = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/applications/$($Identity.gatewayApiApplicationObjectId)/federatedIdentityCredentials?`$select=id,name,issuer,subject,audiences")
-    if ($fics.Count -eq 0 -and $AllowMissing) { return $true }
-    if ($fics.Count -ne 1 -or [string]$fics[0].name -cne $ficName -or
-        [string]$fics[0].issuer -cne "https://login.microsoftonline.com/$($Config.tenantId)/v2.0" -or
-        -not ([string]$fics[0].subject).Equals($ApiPrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
-        @($fics[0].audiences).Count -ne 1 -or [string]$fics[0].audiences[0] -cne 'api://AzureADTokenExchange') {
-        throw 'Gateway API federated credentials are outside the reviewed empty-or-one exact managed-identity OBO boundary.'
-    }
-    return $true
+    return Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $PrincipalId -ExpectedRoleValues $ExpectedRoleValues -RequireComplete
 }
 
 function Ensure-ServicePrincipal {
@@ -727,557 +636,6 @@ function Get-BootstrapPurviewExchangeRole {
     }
 }
 
-function Get-BootstrapPurviewDirectoryRoleAssignments {
-    param([Parameter(Mandatory)][string]$PrincipalId)
-
-    return @(Get-BoundedGraphCollection -InitialUrl (
-        "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?" +
-        "`$filter=principalId%20eq%20'$PrincipalId'&" +
-        '$select=id,principalId,roleDefinitionId,directoryScopeId'))
-}
-
-function Assert-BootstrapPurviewAutomationApplication {
-    param(
-        [Parameter(Mandatory)]$Application,
-        [Parameter(Mandatory)][string]$DisplayName,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$OwnerObjectId,
-        [Parameter(Mandatory)]$ExchangeRole,
-        [switch]$AllowMissingCertificate
-    )
-
-    Assert-ExactApplicationAuthenticationSurface `
-        -Application $Application `
-        -ApplicationLabel 'Purview automation application' | Out-Null
-    if ([string]$Application.displayName -cne $DisplayName -or
-        [string]$Application.signInAudience -cne 'AzureADMyOrg' -or
-        @($Application.identifierUris).Count -ne 0 -or
-        @($Application.passwordCredentials).Count -ne 0 -or
-        @($Application.appRoles).Count -ne 0 -or
-        @($Application.api.oauth2PermissionScopes).Count -ne 0 -or
-        @($Application.web.redirectUris).Count -ne 0 -or
-        @($Application.spa.redirectUris).Count -ne 0 -or
-        @($Application.publicClient.redirectUris).Count -ne 0) {
-        throw 'Purview automation application authentication and local permission surfaces are not exact.'
-    }
-    $requirements = @($Application.requiredResourceAccess)
-    $requiredExchange = @($requirements | Where-Object { [string]$_.resourceAppId -ceq $script:PurviewExchangeOnlineAppId })
-    $legacy = @($requirements | Where-Object { [string]$_.resourceAppId -ceq $script:PurviewLegacyProtectionAppId })
-    $access = if ($requiredExchange.Count -eq 1) { @($requiredExchange[0].resourceAccess) } else { @() }
-    $legacyAccess = if ($legacy.Count -eq 1) { @($legacy[0].resourceAccess) } else { @() }
-    if ($requiredExchange.Count -ne 1 -or $legacy.Count -gt 1 -or
-        $requirements.Count -ne 1 + $legacy.Count -or
-        $access.Count -ne 1 -or
-        [string]$access[0].id -cne [string]$ExchangeRole.roleId -or
-        [string]$access[0].type -cne 'Role' -or
-        ($legacy.Count -eq 1 -and ($legacyAccess.Count -ne 1 -or
-            [string]$legacyAccess[0].id -cne $script:PurviewLegacyProtectionRoleId -or
-            [string]$legacyAccess[0].type -cne 'Role'))) {
-        throw 'Purview automation application requiredResourceAccess is not the exact Security and Compliance app-only permission.'
-    }
-    if (-not $AllowMissingCertificate -and @($Application.keyCredentials).Count -ne 1) {
-        throw 'Purview automation application must contain exactly one certificate credential.'
-    }
-    if ($AllowMissingCertificate -and @($Application.keyCredentials).Count -gt 1) {
-        throw 'Purview automation application contains more than one certificate credential.'
-    }
-    Assert-BootstrapApplicationOwnership `
-        -Application $Application `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -OwnerObjectId $OwnerObjectId | Out-Null
-    return $true
-}
-
-function Assert-BootstrapPurviewAutomationServicePrincipal {
-    param(
-        [Parameter(Mandatory)]$Principal,
-        [Parameter(Mandatory)][string]$ApplicationId,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)]$ExchangeRole,
-        [switch]$AllowMissingAssignments
-    )
-
-    $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
-    if ([string]$Principal.appId -cne $ApplicationId -or
-        $Principal.accountEnabled -ne $true -or
-        [string]$Principal.servicePrincipalType -cne 'Application' -or
-        $Principal.appRoleAssignmentRequired -ne $false -or
-        @($Principal.passwordCredentials).Count -ne 0 -or
-        @($Principal.keyCredentials).Count -ne 0 -or
-        @($Principal.appRoles).Count -ne 0 -or
-        @($Principal.oauth2PermissionScopes).Count -ne 0 -or
-        -not (Test-ExactStringSet -Actual @($Principal.servicePrincipalNames) -Expected @($ApplicationId)) -or
-        -not (Test-ExactStringSet -Actual @($Principal.tags) -Expected $expectedTags)) {
-        throw 'Purview automation service principal is outside the exact credential-free ownership boundary.'
-    }
-    $principalId = ([guid][string]$Principal.id).ToString('D')
-    $owners = @(Get-BoundedGraphCollection -InitialUrl (
-        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/owners?`$select=id"))
-    $groups = @(Get-BoundedGraphCollection -InitialUrl (
-        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
-        'transitiveMemberOf/microsoft.graph.group?$select=id'))
-    $resourceAssignments = @(Get-BoundedGraphCollection -InitialUrl (
-        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
-        'appRoleAssignedTo?$select=id,principalId,resourceId,appRoleId'))
-    if ($owners.Count -ne 0 -or $groups.Count -ne 0 -or $resourceAssignments.Count -ne 0) {
-        throw 'Purview automation service principal has an unreviewed owner, group membership, or local role assignee.'
-    }
-    $assignments = @(Get-BoundedGraphCollection -InitialUrl (
-        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
-        'appRoleAssignments?$select=id,resourceId,appRoleId'))
-    $matchingExchange = @($assignments | Where-Object {
-        [string]$_.resourceId -ceq [string]$ExchangeRole.servicePrincipalId -and
-        [string]$_.appRoleId -ceq [string]$ExchangeRole.roleId
-    })
-    $matchingLegacy = @()
-    if ($assignments.Count -ne $matchingExchange.Count) {
-        $legacy = Get-ServicePrincipalByAppId -AppId $script:PurviewLegacyProtectionAppId
-        if ($legacy -and [string]$legacy.appId -ceq $script:PurviewLegacyProtectionAppId -and
-            ([guid][string]$legacy.id) -ne [guid]::Empty) {
-            $matchingLegacy = @($assignments | Where-Object {
-                [string]$_.resourceId -ceq [string]$legacy.id -and
-                [string]$_.appRoleId -ceq $script:PurviewLegacyProtectionRoleId
-            })
-        }
-    }
-    $directoryAssignments = @(Get-BootstrapPurviewDirectoryRoleAssignments -PrincipalId $principalId)
-    $matchingCompliance = @($directoryAssignments | Where-Object {
-        [string]$_.principalId -ceq $principalId -and
-        [string]$_.roleDefinitionId -ceq $script:PurviewComplianceAdministratorRoleDefinitionId -and
-        [string]$_.directoryScopeId -ceq '/'
-    })
-    $minimum = if ($AllowMissingAssignments) { 0 } else { 1 }
-    if ($matchingExchange.Count -gt 1 -or $matchingExchange.Count -lt $minimum -or
-        $matchingLegacy.Count -gt 1 -or
-        $matchingExchange.Count + $matchingLegacy.Count -ne $assignments.Count -or
-        $directoryAssignments.Count -gt 1 -or
-        $directoryAssignments.Count -lt $minimum -or
-        $matchingCompliance.Count -ne $directoryAssignments.Count) {
-        throw 'Purview automation principal app-only or Compliance Administrator assignments are outside the exact reviewed boundary.'
-    }
-    return [ordered]@{
-        exchangeAssignments = @($matchingExchange)
-        legacyProtectionAssignments = @($matchingLegacy)
-        complianceAssignments = @($directoryAssignments)
-    }
-}
-
-function Get-BootstrapPurviewAutomationApplication {
-    param([Parameter(Mandatory)][string]$ApplicationObjectId)
-
-    return Invoke-AzJson -Arguments @(
-        'rest', '--method', 'GET', '--url',
-        "https://graph.microsoft.com/v1.0/applications/${ApplicationObjectId}?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient"
-    )
-}
-
-function New-BootstrapPurviewCertificateRsa {
-    if ($IsWindows) {
-        $csp = [Security.Cryptography.CspParameters]::new(24)
-        $csp.KeyContainerName = "a365gw-purview-$([guid]::NewGuid().ToString('N'))"
-        $csp.KeyNumber = [Security.Cryptography.KeyNumber]::Exchange
-        $csp.Flags = [Security.Cryptography.CspProviderFlags]::NoPrompt
-        $rsa = [Security.Cryptography.RSACryptoServiceProvider]::new(2048, $csp)
-        $rsa.PersistKeyInCsp = $false
-        return $rsa
-    }
-    return [Security.Cryptography.RSA]::Create(2048)
-}
-
-function Get-BootstrapPurviewAutomationIdentityEvidence {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AzureIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
-    )
-
-    $displayName = "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)"
-    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
-    if (-not $application) { throw 'The bootstrap-owned Purview automation application was not found.' }
-    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
-    $exchangeRole = Get-BootstrapPurviewExchangeRole
-    Assert-BootstrapPurviewAutomationApplication `
-        -Application $application `
-        -DisplayName $displayName `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
-        -ExchangeRole $exchangeRole | Out-Null
-    $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-    if (-not $principal) { throw 'The bootstrap-owned Purview automation service principal was not found.' }
-    $null = Assert-BootstrapPurviewAutomationServicePrincipal `
-        -Principal $principal `
-        -ApplicationId ([string]$application.appId) `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -ExchangeRole $exchangeRole
-    $certificate = Get-GatewayPurviewAutomationCertificateSecretArmMetadata `
-        -Config $Config `
-        -KeyVaultUri $KeyVaultUri `
-        -AutomationApplicationId ([string]$application.appId) `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -SourceFingerprint $SourceFingerprint
-    $keys = @($application.keyCredentials)
-    $customIdentifierBytes = $null
-    $customIdentifierThumbprint = ''
-    $keyExpiresAt = [DateTimeOffset]::MinValue
-    if ($keys.Count -eq 1) {
-        try {
-            $customIdentifierBytes = [Convert]::FromBase64String([string]$keys[0].customKeyIdentifier)
-            $customIdentifierThumbprint = [Convert]::ToHexString($customIdentifierBytes).ToLowerInvariant()
-        }
-        catch {
-            $customIdentifierThumbprint = ''
-        }
-        finally {
-            if ($customIdentifierBytes) {
-                [Security.Cryptography.CryptographicOperations]::ZeroMemory($customIdentifierBytes)
-            }
-        }
-    }
-    if ([string]$certificate.status -cne 'Present' -or $keys.Count -ne 1 -or
-        [string]$keys[0].keyId -cne [string]$certificate.keyCredentialId -or
-        [string]$keys[0].displayName -cne 'a365gw-purview-automation-certificate' -or
-        [string]$keys[0].type -cne 'AsymmetricX509Cert' -or
-        [string]$keys[0].usage -cne 'Verify' -or
-        $customIdentifierThumbprint -cne [string]$certificate.certificateThumbprint -or
-        -not [DateTimeOffset]::TryParse(
-            [string]$keys[0].endDateTime,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind,
-            [ref]$keyExpiresAt) -or
-        $keyExpiresAt.ToUniversalTime() -le [DateTimeOffset]::UtcNow) {
-        throw 'Purview automation certificate and Key Vault metadata do not match exactly.'
-    }
-    return [ordered]@{
-        enabled = $true
-        status = 'Installed'
-        organization = Get-BootstrapInitialTenantDomain
-        automationApplicationObjectId = ([guid][string]$application.id).ToString('D')
-        automationApplicationId = ([guid][string]$application.appId).ToString('D')
-        automationServicePrincipalId = ([guid][string]$principal.id).ToString('D')
-        exchangeOnlineApplicationId = $script:PurviewExchangeOnlineAppId
-        exchangeManageAsAppRoleId = $script:PurviewExchangeManageAsAppRoleId
-        complianceAdministratorRoleDefinitionId = $script:PurviewComplianceAdministratorRoleDefinitionId
-        keyCredentialId = [string]$certificate.keyCredentialId
-        certificateThumbprint = [string]$certificate.certificateThumbprint
-        certificateSecretResourceId = [string]$certificate.secretResourceId
-        certificateSecretUri = [string]$certificate.secretUri
-        deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
-        sourceFingerprint = $SourceFingerprint
-        policyConfiguration = 'NotPerformed'
-        policyReadiness = 'NotClaimed'
-    }
-}
-
-function Test-BootstrapPurviewAutomationIdentityEvidence {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AzureIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter(Mandatory)]$Evidence
-    )
-
-    $readback = Get-BootstrapPurviewAutomationIdentityEvidence `
-        -Config $Config `
-        -AzureIdentity $AzureIdentity `
-        -KeyVaultUri $KeyVaultUri `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -SourceFingerprint $SourceFingerprint
-    $projection = [ordered]@{}
-    foreach ($name in @($readback.Keys | ForEach-Object { [string]$_ })) {
-        $value = Get-OptionalObjectPropertyValue -InputObject $Evidence -PropertyName $name
-        $projection[$name] = $value
-    }
-    if ((Get-BootstrapObjectFingerprint -InputObject $projection) -cne
-        (Get-BootstrapObjectFingerprint -InputObject $readback)) {
-        throw 'Purview automation identity evidence no longer matches exact provider readback.'
-    }
-    return $true
-}
-
-function Get-BootstrapPurviewCertificateCredentialWindow {
-    param([Parameter(Mandatory)]$Certificate)
-
-    # Microsoft documents endDateTime as at most one year from startDateTime, and the
-    # window must stay inside the certificate itself. X.509 validity has whole-second
-    # resolution, so a sub-second endDateTime outlives the certificate it describes and
-    # the application update is rejected as invalid.
-    $notBefore = [DateTimeOffset]::new(
-        ([datetime]$Certificate.NotBefore).ToUniversalTime(), [TimeSpan]::Zero)
-    $notAfter = [DateTimeOffset]::new(
-        ([datetime]$Certificate.NotAfter).ToUniversalTime(), [TimeSpan]::Zero)
-    $end = $notBefore.AddDays($script:PurviewCertificateCredentialDays)
-    if ($end -gt $notAfter) { $end = $notAfter }
-    if ($end -le $notBefore -or $end -le [DateTimeOffset]::UtcNow -or $end -gt $notBefore.AddYears(1)) {
-        throw 'The Purview automation certificate cannot produce a valid Microsoft Entra credential window.'
-    }
-    return [ordered]@{
-        startDateTime = $notBefore.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
-        endDateTime = $end.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
-    }
-}
-
-function New-BootstrapPurviewAutomationCertificate {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AzureIdentity,
-        [Parameter(Mandatory)][string]$ApplicationObjectId,
-        [Parameter(Mandatory)][string]$ApplicationId,
-        [Parameter(Mandatory)][string]$KeyCredentialId,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint
-    )
-
-    foreach ($value in @($ApplicationObjectId, $ApplicationId, $KeyCredentialId)) {
-        Assert-GuidValue -Value $value -Label 'Purview certificate pinned identifier'
-        if ($value -cne ([guid]$value).ToString('D')) { throw 'Purview certificate identifiers must be canonical.' }
-    }
-    $null = Resolve-GatewayCredentialDeploymentTemplate `
-        -RelativeTemplate 'bootstrap/infra/purview-automation-certificate.bicep' `
-        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId $ApplicationObjectId
-    if ([string]$application.id -cne $ApplicationObjectId -or [string]$application.appId -cne $ApplicationId) {
-        throw 'Purview certificate application no longer matches the pinned identity.'
-    }
-    Assert-BootstrapPurviewAutomationApplication -Application $application `
-        -DisplayName "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)" `
-        -DeploymentOwnershipId $DeploymentOwnershipId -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
-        -ExchangeRole (Get-BootstrapPurviewExchangeRole) -AllowMissingCertificate | Out-Null
-    $metadata = Get-GatewayPurviewAutomationCertificateSecretArmMetadata -Config $Config -KeyVaultUri $KeyVaultUri `
-        -AutomationApplicationId $ApplicationId -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint
-    if (@($application.keyCredentials).Count -ne 0 -or [string]$metadata.status -cne 'Absent') {
-        throw 'Purview certificate creation requires both Entra and Key Vault to be absent; no replacement is allowed.'
-    }
-    $rsa = $null
-    $certificateObject = $null
-    $pfxBytes = $null
-    $publicBytes = $null
-    $certificateSecretText = $null
-    try {
-        $rsa = New-BootstrapPurviewCertificateRsa
-        $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-            "CN=a365gw-$($Config.projectName)-$($Config.environment)-purview",
-            $rsa,
-            [Security.Cryptography.HashAlgorithmName]::SHA256,
-            [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-        $request.CertificateExtensions.Add(
-            [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
-        $request.CertificateExtensions.Add(
-            [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
-                $true))
-        $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
-        $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
-        $certificateObject = $request.CreateSelfSigned($notBefore, $notAfter)
-        $credentialWindow = Get-BootstrapPurviewCertificateCredentialWindow -Certificate $certificateObject
-        $pfxBytes = $certificateObject.Export(
-            [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
-        $publicBytes = $certificateObject.Export(
-            [Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-        $certificateSecretText = [Convert]::ToBase64String($pfxBytes)
-        $thumbprint = ([string]$certificateObject.Thumbprint).ToLowerInvariant()
-        $null = Deploy-GatewayPurviewAutomationCertificateSecret `
-            -Config $Config `
-            -KeyVaultUri $KeyVaultUri `
-            -AutomationApplicationId ([string]$application.appId) `
-            -KeyCredentialId $keyCredentialId `
-            -CertificateThumbprint $thumbprint `
-            -CertificateSecretText $certificateSecretText `
-                -DeploymentOwnershipId $DeploymentOwnershipId `
-                -SourceFingerprint $SourceFingerprint `
-                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-            try {
-            Invoke-GraphJsonBody -Method 'PATCH' -Url (
-                "https://graph.microsoft.com/v1.0/applications/$($application.id)") -Body @{
-                keyCredentials = @(@{
-                    keyId = $keyCredentialId
-                    displayName = 'a365gw-purview-automation-certificate'
-                    type = 'AsymmetricX509Cert'
-                    usage = 'Verify'
-                    key = [Convert]::ToBase64String($publicBytes)
-                    customKeyIdentifier = [Convert]::ToBase64String(
-                        [Convert]::FromHexString($thumbprint))
-                    startDateTime = [string]$credentialWindow.startDateTime
-                    endDateTime = [string]$credentialWindow.endDateTime
-                })
-            } | Out-Null
-        }
-        catch {
-            $application = Get-BootstrapPurviewAutomationApplication `
-                -ApplicationObjectId ([string]$application.id)
-            if (@($application.keyCredentials | Where-Object {
-                [string]$_.keyId -ceq $keyCredentialId
-            }).Count -ne 1) {
-                throw 'Microsoft Graph returned an unknown Purview certificate outcome and exact readback did not prove success.'
-            }
-        }
-    }
-    finally {
-        if ($pfxBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfxBytes) }
-        if ($publicBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicBytes) }
-        if ($certificateObject) { $certificateObject.Dispose() }
-        if ($rsa) { $rsa.Dispose() }
-        $certificateSecretText = $null
-        $request = $null
-    }
-}
-
-function Ensure-BootstrapPurviewAutomationIdentity {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AzureIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter()][string]$ExecutionSourceFingerprint = '',
-        [switch]$ReconcileOnly
-    )
-
-    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
-    if (-not $ReconcileOnly) {
-        $null = Resolve-GatewayCredentialDeploymentTemplate `
-            -RelativeTemplate 'bootstrap/infra/purview-automation-certificate.bicep' `
-            -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-    }
-    $displayName = "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)"
-    $exchangeRole = Get-BootstrapPurviewExchangeRole
-    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
-    if (-not $application) {
-        if ($ReconcileOnly) { throw 'The bootstrap-owned Purview automation application was not observable during read-only reconciliation.' }
-        $application = Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/applications' -Body @{
-            displayName = $displayName
-            signInAudience = 'AzureADMyOrg'
-            tags = Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId
-            isFallbackPublicClient = $false
-            web = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
-            api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @(); oauth2PermissionScopes = @() }
-            appRoles = @()
-            requiredResourceAccess = @(@{
-                resourceAppId = $script:PurviewExchangeOnlineAppId
-                resourceAccess = @(@{
-                    id = $script:PurviewExchangeManageAsAppRoleId
-                    type = 'Role'
-                })
-            })
-            keyCredentials = @()
-        }
-    }
-    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
-    Assert-BootstrapApplicationOwnership `
-        -Application $application `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
-        -AllowAddMissingOwner:(!$ReconcileOnly) | Out-Null
-    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
-    Assert-BootstrapPurviewAutomationApplication `
-        -Application $application `
-        -DisplayName $displayName `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
-        -ExchangeRole $exchangeRole `
-        -AllowMissingCertificate | Out-Null
-
-    $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-    if (-not $principal) {
-        if ($ReconcileOnly) { throw 'The Purview automation service principal was not observable during read-only reconciliation.' }
-        $principal = Ensure-ServicePrincipal `
-            -AppId ([string]$application.appId) `
-            -ServicePrincipalNames @([string]$application.appId) `
-            -Tags @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
-    }
-    $assignmentBoundary = Assert-BootstrapPurviewAutomationServicePrincipal `
-        -Principal $principal `
-        -ApplicationId ([string]$application.appId) `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -ExchangeRole $exchangeRole `
-        -AllowMissingAssignments
-    if ($assignmentBoundary.exchangeAssignments.Count -eq 0) {
-        if ($ReconcileOnly) { throw 'Purview Exchange.ManageAsApp consent is missing during read-only reconciliation.' }
-        Invoke-GraphJsonBody -Method 'POST' -Url (
-            "https://graph.microsoft.com/v1.0/servicePrincipals/$($principal.id)/appRoleAssignments") -Body @{
-            principalId = [string]$principal.id
-            resourceId = [string]$exchangeRole.servicePrincipalId
-            appRoleId = [string]$exchangeRole.roleId
-        } | Out-Null
-    }
-    if ($assignmentBoundary.complianceAssignments.Count -eq 0) {
-        if ($ReconcileOnly) { throw 'Purview Compliance Administrator assignment is missing during read-only reconciliation.' }
-        $definition = Invoke-AzJson -Arguments @(
-            'rest', '--method', 'GET', '--url',
-            "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($script:PurviewComplianceAdministratorRoleDefinitionId)?`$select=id,templateId,isBuiltIn,isEnabled"
-        )
-        if ([string]$definition.id -cne $script:PurviewComplianceAdministratorRoleDefinitionId -or
-            [string]$definition.templateId -cne $script:PurviewComplianceAdministratorRoleDefinitionId -or
-            $definition.isBuiltIn -ne $true -or $definition.isEnabled -ne $true) {
-            throw 'The supported Compliance Administrator role definition was not available exactly.'
-        }
-        Invoke-GraphJsonBody -Method 'POST' -Url (
-            'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments') -Body @{
-            principalId = [string]$principal.id
-            roleDefinitionId = $script:PurviewComplianceAdministratorRoleDefinitionId
-            directoryScopeId = '/'
-        } | Out-Null
-    }
-    $assignmentVerified = $false
-    for ($attempt = 1; $attempt -le 12; $attempt++) {
-        try {
-            $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-            $null = Assert-BootstrapPurviewAutomationServicePrincipal `
-                -Principal $principal `
-                -ApplicationId ([string]$application.appId) `
-                -DeploymentOwnershipId $DeploymentOwnershipId `
-                -ExchangeRole $exchangeRole
-            $assignmentVerified = $true
-            break
-        }
-        catch {
-            if ($attempt -lt 12) { Start-Sleep -Seconds 5 }
-        }
-    }
-    if (-not $assignmentVerified) {
-        throw 'Purview automation app-only and Compliance Administrator assignments were not observed exactly.'
-    }
-
-    $certificate = Get-GatewayPurviewAutomationCertificateSecretArmMetadata `
-        -Config $Config `
-        -KeyVaultUri $KeyVaultUri `
-        -AutomationApplicationId ([string]$application.appId) `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -SourceFingerprint $SourceFingerprint
-    $keys = @($application.keyCredentials)
-    if (($keys.Count -eq 0) -ne ([string]$certificate.status -ceq 'Absent')) {
-        throw 'Purview automation certificate state is partial across Entra and Key Vault; no automatic replacement was attempted.'
-    }
-    if ($keys.Count -eq 0) {
-        if ($ReconcileOnly) { throw 'Purview automation certificate is missing during read-only reconciliation.' }
-        New-BootstrapPurviewAutomationCertificate -Config $Config -AzureIdentity $AzureIdentity `
-            -ApplicationObjectId ([string]$application.id) -ApplicationId ([string]$application.appId) `
-            -KeyCredentialId ([guid]::NewGuid().ToString('D')) -KeyVaultUri $KeyVaultUri `
-            -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
-            -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-    }
-
-    for ($attempt = 1; $attempt -le 12; $attempt++) {
-        try {
-            return Get-BootstrapPurviewAutomationIdentityEvidence `
-                -Config $Config `
-                -AzureIdentity $AzureIdentity `
-                -KeyVaultUri $KeyVaultUri `
-                -DeploymentOwnershipId $DeploymentOwnershipId `
-                -SourceFingerprint $SourceFingerprint
-        }
-        catch {
-            if ($attempt -eq 12) { throw }
-            Start-Sleep -Seconds 5
-        }
-    }
-}
-
 function Ensure-GatewayApiApplication {
     param(
         [Parameter(Mandatory)]$Config,
@@ -1330,7 +688,7 @@ function Ensure-GatewayApiApplication {
         [string]$application.signInAudience -cne 'AzureADMyOrg' -or
         @($application.identifierUris).Count -ne 1 -or
         [string]$application.identifierUris[0] -cne $audience -or
-        @($application.passwordCredentials).Count -ne 0 -or
+        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials)) -or
         @($application.keyCredentials).Count -ne 0 -or
         @($application.web.redirectUris).Count -ne 0 -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
@@ -1338,7 +696,7 @@ function Ensure-GatewayApiApplication {
         @($application.spa.redirectUris).Count -ne 0 -or
         @($application.publicClient.redirectUris).Count -ne 0 -or
         [int]$application.api.requestedAccessTokenVersion -ne 2) {
-        throw 'Gateway API application does not match the exact single-tenant, credential-free audience boundary.'
+        throw 'Gateway API application does not match the exact single-tenant audience and profile-specific credential boundary.'
     }
     $scope = @($application.api.oauth2PermissionScopes | Where-Object value -eq 'access_as_user')
     if (@($application.api.oauth2PermissionScopes).Count -ne 1 -or $scope.Count -ne 1 -or
@@ -1412,6 +770,10 @@ function Ensure-GatewayApiApplication {
     $principalBoundaryArguments.ServicePrincipal = $principal
     Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments | Out-Null
     Assert-GatewayApiDelegatedPermissionBoundary -Identity $gatewayApiIdentityBoundary | Out-Null
+    if ($Config.environment -eq 'dev' -and
+        $Config.agent365.allowDevelopmentRegistryPreview -and $Config.agent365.registryBetaAcknowledged) {
+        Ensure-GatewayApiDelegatedRegistryConsent -Identity $gatewayApiIdentityBoundary -ReconcileOnly:$ReconcileOnly
+    }
     return [ordered]@{
         gatewayApiApplicationObjectId = [string]$application.id
         gatewayApiClientId = [string]$application.appId
@@ -1442,529 +804,7 @@ function Ensure-GraphApplicationRoleAssignment {
     return [string]$role[0].id
 }
 
-function Get-GatewayPurviewRuntimeManagedIdentity {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity
-    )
-
-    if ($Config.purview.enabled -ne $true) {
-        throw 'Purview runtime managed-identity readback requires the Purview capability.'
-    }
-
-    $name = "id-gateway-runtime-pull-$($Config.environment)"
-    $resource = Invoke-AzJson -Arguments @(
-        'identity', 'show',
-        '--subscription', [string]$Config.subscriptionId,
-        '--resource-group', [string]$Config.resourceGroupName,
-        '--name', $name
-    )
-    $expectedId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$name"
-    $clientId = [guid]::Empty
-    $principalId = [guid]::Empty
-    if ([string]$resource.id -ine $expectedId -or
-        [string]$resource.name -cne $name -or
-        [string]$resource.type -ine 'Microsoft.ManagedIdentity/userAssignedIdentities' -or
-        [string]$resource.location -ine [string]$Config.location -or
-        [string]$resource.tenantId -ine [string]$Config.tenantId -or
-        -not [guid]::TryParse([string]$resource.clientId, [ref]$clientId) -or
-        $clientId -eq [guid]::Empty -or
-        [string]$resource.clientId -cne $clientId.ToString('D') -or
-        -not [guid]::TryParse([string]$resource.principalId, [ref]$principalId) -or
-        $principalId -eq [guid]::Empty -or
-        [string]$resource.principalId -cne $principalId.ToString('D') -or
-        [string]$resource.tags.application -cne 'a365-custom-gateway' -or
-        [string]$resource.tags.environment -cne [string]$Config.environment -or
-        [string]$resource.tags.managedBy -cne 'bootstrap' -or
-        [string]$resource.tags.projectName -cne [string]$Config.projectName -or
-        [string]$resource.tags.deploymentId -cne "$($Config.projectName)-$($Config.environment)" -or
-        [string]$resource.tags.bootstrapOwnershipId -cne [string]$Identity.deploymentOwnershipId -or
-        [string]$resource.tags.workload -cne 'runtime-image-pull') {
-        throw 'The API Purview runtime managed identity does not match the exact bootstrap-owned deployment boundary.'
-    }
-
-    return [ordered]@{
-        resourceId = $expectedId
-        clientId = $clientId.ToString('D')
-        principalId = $principalId.ToString('D')
-    }
-}
-
-function Configure-GatewayWorkloadIdentity {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity,
-        [Parameter(Mandatory)][string]$ApiPrincipalId,
-        [Parameter(Mandatory)][string]$WorkerPrincipalId,
-        [switch]$EnablePurview
-    )
-    $root = Get-BootstrapExecutionSourceRoot
-    $federatedCredentialName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
-    $workerRoles = @(
-        'Application.Read.All',
-        'AppRoleAssignment.ReadWrite.All',
-        'AgentIdentityBlueprint.Create',
-        'AgentIdentityBlueprint.AddRemoveCreds.All',
-        'AgentIdentityBlueprintPrincipal.Create',
-        'AgentIdentityBlueprint.Read.All',
-        'AgentIdentity.Create.All',
-        'AgentIdentity.Read.All'
-    )
-    $apiRoles = [Collections.Generic.List[string]]::new()
-    $apiRoles.Add('AgentIdentityBlueprint.Read.All')
-    $purviewRuntimeRoles = @(
-        'ProtectionScopes.Compute.User',
-        'Content.Process.User',
-        'ContentActivity.Write'
-    )
-    $purviewRuntimeIdentity = $null
-    if ($EnablePurview) {
-        $purviewRuntimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
-            -Config $Config `
-            -Identity $Identity
-    }
-    # Reject unknown requested permissions or grants before making any Entra
-    # mutation. Missing members of the reviewed sets may be added below, but an
-    # extra FIC or application-role assignment requires explicit runbook recovery.
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity | Out-Null
-    Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId -AllowMissing | Out-Null
-    Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
-    Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
-    if ($EnablePurview) {
-        Assert-GraphApplicationRoleAssignmentBoundary `
-            -PrincipalId $purviewRuntimeIdentity.principalId `
-            -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
-    }
-    & (Join-Path $root 'tools/configure-workflow-v3-entra.ps1') `
-        -ExpectedSubscriptionId ([guid]$Config.subscriptionId) `
-        -ExpectedTenantId ([guid]$Config.tenantId) `
-        -GatewayApiApplicationClientId ([guid]$Identity.gatewayApiClientId) `
-        -GatewayApiManagedIdentityPrincipalId ([guid]$ApiPrincipalId) `
-        -WorkerManagedIdentityPrincipalId ([guid]$WorkerPrincipalId) `
-        -FederatedCredentialName $federatedCredentialName `
-        -RequireNoDestructiveChanges `
-        -Apply | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Workflow-v3 Entra configuration failed.' }
-    $workerRoleIds = [ordered]@{}
-    foreach ($role in $workerRoles) { $workerRoleIds[$role] = Ensure-GraphApplicationRoleAssignment -PrincipalId $WorkerPrincipalId -RoleValue $role }
-    $apiRoleIds = [ordered]@{}
-    foreach ($role in $apiRoles) { $apiRoleIds[$role] = Ensure-GraphApplicationRoleAssignment -PrincipalId $ApiPrincipalId -RoleValue $role }
-    if ($EnablePurview) {
-        foreach ($role in $purviewRuntimeRoles) {
-            $null = Ensure-GraphApplicationRoleAssignment `
-                -PrincipalId $purviewRuntimeIdentity.principalId `
-                -RoleValue $role
-        }
-    }
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
-    Assert-ExactGraphApplicationRoleAssignments -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
-    Assert-ExactGraphApplicationRoleAssignments -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
-    if ($EnablePurview) {
-        Assert-ExactGraphApplicationRoleAssignments -PrincipalId $purviewRuntimeIdentity.principalId -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
-    }
-    Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId | Out-Null
-    return Get-GatewayWorkloadIdentityEvidence -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId -WorkerPrincipalId $WorkerPrincipalId -EnablePurview:$EnablePurview
-}
-
-function Get-GatewayWorkloadIdentityEvidence {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity,
-        [Parameter(Mandatory)][string]$ApiPrincipalId,
-        [Parameter(Mandatory)][string]$WorkerPrincipalId,
-        [switch]$EnablePurview
-    )
-    $workerRoles = @(
-        'Application.Read.All', 'AppRoleAssignment.ReadWrite.All',
-        'AgentIdentityBlueprint.Create', 'AgentIdentityBlueprint.AddRemoveCreds.All',
-        'AgentIdentityBlueprintPrincipal.Create', 'AgentIdentityBlueprint.Read.All',
-        'AgentIdentity.Create.All', 'AgentIdentity.Read.All'
-    )
-    $apiRoles = [Collections.Generic.List[string]]::new()
-    $apiRoles.Add('AgentIdentityBlueprint.Read.All')
-    $purviewRuntimeRoles = @(
-        'ProtectionScopes.Compute.User',
-        'Content.Process.User',
-        'ContentActivity.Write'
-    )
-    $purviewRuntimeIdentity = $null
-    if ($EnablePurview) {
-        $purviewRuntimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
-            -Config $Config `
-            -Identity $Identity
-    }
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
-    Assert-ExactGraphApplicationRoleAssignments -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
-    Assert-ExactGraphApplicationRoleAssignments -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
-    if ($EnablePurview) {
-        Assert-ExactGraphApplicationRoleAssignments -PrincipalId $purviewRuntimeIdentity.principalId -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
-    }
-
-    $ficName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
-    Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId | Out-Null
-    $graph = (Get-GraphPermissionCatalog).servicePrincipal
-    $workerRoleIds = [ordered]@{}
-    foreach ($role in $workerRoles) { $workerRoleIds[$role] = Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role }
-    $apiHostRoleIds = [ordered]@{}
-    foreach ($role in $apiRoles) { $apiHostRoleIds[$role] = Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role }
-    $purviewRuntimeRoleIds = [ordered]@{}
-    if ($EnablePurview) {
-        foreach ($role in $purviewRuntimeRoles) {
-            $purviewRuntimeRoleIds[$role] =
-                Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role
-        }
-    }
-    $apiCapabilityRoleIds = [ordered]@{}
-    foreach ($entry in $apiHostRoleIds.GetEnumerator()) {
-        $apiCapabilityRoleIds[[string]$entry.Key] = [string]$entry.Value
-    }
-    foreach ($entry in $purviewRuntimeRoleIds.GetEnumerator()) {
-        $apiCapabilityRoleIds[[string]$entry.Key] = [string]$entry.Value
-    }
-    return [ordered]@{
-        federatedCredentialName = $ficName
-        workerApplicationRoles = $workerRoleIds
-        # Retain the established capability-level role map while binding its
-        # Purview members to the dedicated runtime identity below.
-        apiApplicationRoles = $apiCapabilityRoleIds
-        apiHostApplicationRoles = $apiHostRoleIds
-        purviewRuntimeIdentityResourceId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.resourceId } else { '' }
-        purviewRuntimeManagedIdentityClientId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.clientId } else { '' }
-        purviewRuntimeManagedIdentityPrincipalId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.principalId } else { '' }
-        purviewRuntimeApplicationRoles = $purviewRuntimeRoleIds
-        delegatedRegistryScopes = @('AgentRegistration.Read.All', 'AgentRegistration.ReadWrite.All')
-    }
-}
-
-function Test-GatewayWorkflowIdentityEvidence {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity,
-        [Parameter(Mandatory)]$Inert,
-        [Parameter(Mandatory)]$Evidence,
-        [AllowNull()][Collections.IDictionary]$State
-    )
-
-    $executorParameters = @{}
-    if ($null -ne $State -and $State.Contains('freshPurviewExecutor')) {
-        if ($Config.purview.enabled -ne $true) { throw 'Core cannot carry fresh executor authority.' }
-        # Keep original Full/Custom configuration in the trust context. The base
-        # verifier's Purview-disabled copy below describes API-host roles only.
-        $executorParameters.PurviewExecutorContext = @{ Configuration = $Config; State = $State; Runtime = $Inert }
-    }
-    if ($Config.purview.enabled -ne $true) {
-        return Experience\Test-GatewayWorkflowIdentityEvidence `
-            -Config $Config `
-            -Identity $Identity `
-            -Inert $Inert `
-            -Evidence $Evidence
-    }
-
-    if ($Evidence.apiHostApplicationRoles -isnot [System.Collections.IDictionary] -or
-        $Evidence.purviewRuntimeApplicationRoles -isnot [System.Collections.IDictionary]) {
-        throw 'Workflow identity evidence has no exact API Purview runtime identity binding.'
-    }
-
-    $baseConfig = $Config | Select-Object *
-    $baseConfig.purview = $Config.purview | Select-Object *
-    $baseConfig.purview.enabled = $false
-    $baseEvidence = [ordered]@{}
-    foreach ($entry in $Evidence.GetEnumerator()) {
-        $baseEvidence[[string]$entry.Key] = $entry.Value
-    }
-    $baseEvidence.apiApplicationRoles = $Evidence.apiHostApplicationRoles
-    $null = Experience\Test-GatewayWorkflowIdentityEvidence `
-        -Config $baseConfig `
-        -Identity $Identity `
-        -Inert $Inert `
-        -Evidence $baseEvidence @executorParameters
-
-    $runtimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
-        -Config $Config `
-        -Identity $Identity
-    $requiredRoles = @(
-        'ProtectionScopes.Compute.User',
-        'Content.Process.User',
-        'ContentActivity.Write'
-    )
-    Assert-ExactGraphApplicationRoleAssignments `
-        -PrincipalId $runtimeIdentity.principalId `
-        -ExpectedRoleValues $requiredRoles | Out-Null
-    $evidenceRoles = @(
-        $Evidence.purviewRuntimeApplicationRoles.Keys |
-            ForEach-Object { [string]$_ } |
-            Sort-Object
-    )
-    if ([string]$Evidence.purviewRuntimeIdentityResourceId -ine [string]$runtimeIdentity.resourceId -or
-        [string]$Evidence.purviewRuntimeManagedIdentityClientId -cne [string]$runtimeIdentity.clientId -or
-        [string]$Evidence.purviewRuntimeManagedIdentityPrincipalId -cne [string]$runtimeIdentity.principalId -or
-        ($evidenceRoles -join '|') -cne (($requiredRoles | Sort-Object) -join '|')) {
-        throw 'Workflow identity evidence no longer matches the exact API Purview runtime identity.'
-    }
-
-    return $true
-}
-
-function Ensure-AdminUiApplication {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Identity,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [switch]$ReconcileOnly
-    )
-    $displayName = "A365 Gateway Admin UI - $($Config.projectName)-$($Config.environment)"
-    $expectedRoles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $DeploymentOwnershipId)
-    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
-    if (-not $application) {
-        if ($ReconcileOnly) { throw 'The state-owned Admin UI application was not observable during read-only reconciliation.' }
-        $application = Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/applications' -Body @{
-            displayName = $displayName
-            signInAudience = 'AzureADMyOrg'
-            tags = Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId
-            isFallbackPublicClient = $false
-            web = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
-            api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @() }
-            requiredResourceAccess = @(@{
-                resourceAppId = [string]$Identity.gatewayApiClientId
-                resourceAccess = @(@{ id = [string]$Identity.gatewayApiAccessScopeId; type = 'Scope' })
-            })
-            appRoles = $expectedRoles
-        }
-    }
-    $application = Invoke-AzJson -Arguments @(
-        'rest', '--method', 'GET', '--url',
-        "https://graph.microsoft.com/v1.0/applications/$($application.id)?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient"
-    )
-    Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Admin UI application' | Out-Null
-    $apiRequirements = @($application.requiredResourceAccess)
-    $exactRequiredScope = $apiRequirements.Count -eq 1 -and
-        ([string]$apiRequirements[0].resourceAppId).Equals([string]$Identity.gatewayApiClientId, [StringComparison]::OrdinalIgnoreCase) -and
-        @($apiRequirements[0].resourceAccess).Count -eq 1 -and
-        ([string]$apiRequirements[0].resourceAccess[0].id).Equals([string]$Identity.gatewayApiAccessScopeId, [StringComparison]::OrdinalIgnoreCase) -and
-        [string]$apiRequirements[0].resourceAccess[0].type -ceq 'Scope'
-    $credentials = @($application.passwordCredentials)
-    $credentialsAreBootstrapOwned = $credentials.Count -le 1 -and
-        @($credentials | Where-Object { [string]$_.displayName -cne 'a365gw-bootstrap-admin-ui' }).Count -eq 0
-    Assert-ExactAdminUiGatewayRoleContract `
-        -AppRoles @($application.appRoles) `
-        -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
-    $redirectUris = @($application.web.redirectUris | ForEach-Object { [string]$_ })
-    $logoutUrl = [string]$application.web.logoutUrl
-    $portableRedirectsExact = $false
-    if ((Get-Command Test-GatewayPortableDeployProfile -ErrorAction SilentlyContinue) -and
-        (Test-GatewayPortableDeployProfile -Config $Config)) {
-        $portableBase = "http://127.0.0.1:$([int]$Config.portable.adminUiHostPort)"
-        $portableRedirectsExact = $redirectUris.Count -eq 1 -and
-            $redirectUris[0] -ceq "$portableBase/signin-oidc" -and
-            $logoutUrl -ceq "$portableBase/signout-callback-oidc"
-    }
-    $redirectSurfaceExact = ($redirectUris.Count -eq 0 -and [string]::IsNullOrWhiteSpace($logoutUrl)) -or $portableRedirectsExact
-    if ([string]$application.displayName -cne $displayName -or
-        [string]$application.signInAudience -cne 'AzureADMyOrg' -or
-        @($application.identifierUris).Count -ne 0 -or
-        @($application.api.oauth2PermissionScopes).Count -ne 0 -or
-        @($application.keyCredentials).Count -ne 0 -or
-        -not $redirectSurfaceExact -or
-        -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
-        @($application.spa.redirectUris).Count -ne 0 -or
-        @($application.publicClient.redirectUris).Count -ne 0 -or
-        -not $exactRequiredScope -or -not $credentialsAreBootstrapOwned) {
-        throw 'Admin UI application does not match the exact single-tenant client, permission, role, and credential boundary.'
-    }
-    # Never change application ownership before the exact client boundary above
-    # has been proven.
-    Assert-BootstrapApplicationOwnership -Application $application -DeploymentOwnershipId $DeploymentOwnershipId -OwnerObjectId ([string]$Identity.userObjectId) -AllowAddMissingOwner:(-not $ReconcileOnly) | Out-Null
-    $expectedServicePrincipalTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
-    $principal = if ($ReconcileOnly) {
-        Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-    }
-    else {
-        Ensure-ServicePrincipal `
-            -AppId ([string]$application.appId) `
-            -ServicePrincipalNames @([string]$application.appId) `
-            -Tags $expectedServicePrincipalTags
-    }
-    if (-not $principal) { throw 'Admin UI service principal was not observable during read-only reconciliation.' }
-    $adminUiServicePrincipalId = [string]$principal.id
-    $adminRole = @($application.appRoles | Where-Object { [string]$_.value -ceq 'Administrator' })
-    $principalBoundaryArguments = @{
-        ServicePrincipal = $principal
-        ExpectedId = $adminUiServicePrincipalId
-        ExpectedAppId = [string]$application.appId
-        ServicePrincipalLabel = 'Admin UI service principal'
-        ExpectedServicePrincipalNames = @([string]$application.appId)
-        ExpectedTags = $expectedServicePrincipalTags
-        ExpectedAppRoles = @($application.appRoles)
-        ExpectedOauth2PermissionScopes = @()
-        ExpectedAppRoleAssigneePrincipalId = [string]$Identity.userObjectId
-        ExpectedAppRoleId = [string]$adminRole[0].id
-    }
-    $principalBoundary = Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments -AllowMissingExpectedAppRoleAssignment
-    $userAssignments = @($principalBoundary.appRoleAssignedTo)
-    if ($userAssignments.Count -eq 0) {
-        if ($ReconcileOnly) { throw 'Admin UI Gateway Administrator assignment was not observable during read-only reconciliation.' }
-        Invoke-GraphJsonBody -Method 'POST' -Url "https://graph.microsoft.com/v1.0/servicePrincipals/$($principal.id)/appRoleAssignedTo" -Body @{
-            principalId = [string]$Identity.userObjectId
-            resourceId = [string]$principal.id
-            appRoleId = [string]$adminRole[0].id
-        } | Out-Null
-        for ($attempt = 1; $attempt -le 12; $attempt++) {
-            $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-            if (-not $principal) { throw 'Admin UI service principal disappeared during exact role-assignment readback.' }
-            $principalBoundaryArguments.ServicePrincipal = $principal
-            $principalBoundary = Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments -AllowMissingExpectedAppRoleAssignment
-            $userAssignments = @($principalBoundary.appRoleAssignedTo)
-            if ($userAssignments.Count -eq 1) { break }
-            if ($attempt -lt 12) { Start-Sleep -Seconds 5 }
-        }
-        if ($userAssignments.Count -ne 1) {
-            throw 'The exact Admin UI Gateway Administrator assignment was not observable after creation.'
-        }
-    }
-    $grantUrl = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($principal.id)'&`$select=id,clientId,resourceId,consentType,scope"
-    $grant = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
-    if ($grant.Count -eq 0) {
-        if ($ReconcileOnly) { throw 'Admin UI delegated grant was not observable during read-only reconciliation.' }
-        Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/oauth2PermissionGrants' -Body @{
-            clientId = [string]$principal.id; consentType = 'AllPrincipals'; resourceId = [string]$Identity.gatewayApiServicePrincipalId; scope = 'access_as_user'
-        } | Out-Null
-        $grant = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
-    }
-    $grantScopes = if ($grant.Count -eq 1) {
-        @(([string]$grant[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries))
-    }
-    else { @() }
-    if ($grant.Count -ne 1 -or
-        -not ([string]$grant[0].resourceId).Equals([string]$Identity.gatewayApiServicePrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
-        [string]$grant[0].consentType -cne 'AllPrincipals' -or
-        -not (Test-ExactStringSet -Actual $grantScopes -Expected @('access_as_user'))) {
-        throw 'Admin UI delegated consent must be exactly one tenant-wide access_as_user grant to this Gateway API.'
-    }
-    $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
-    if (-not $principal) { throw 'Admin UI service principal disappeared during final exact readback.' }
-    $principalBoundaryArguments.ServicePrincipal = $principal
-    Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments | Out-Null
-    return [ordered]@{
-        adminUiApplicationObjectId = [string]$application.id
-        adminUiClientId = [string]$application.appId
-        adminUiServicePrincipalId = $adminUiServicePrincipalId
-        gatewayApiClientId = [string]$Identity.gatewayApiClientId
-        gatewayApiAccessScopeId = [string]$Identity.gatewayApiAccessScopeId
-        deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
-        ownerObjectId = [string]$Identity.userObjectId
-    }
-}
-
-function Set-AdminUiRedirectUris {
-    param([Parameter(Mandatory)]$AdminIdentity, [Parameter(Mandatory)][string]$AdminUiFqdn)
-    if ([string]::IsNullOrWhiteSpace($AdminUiFqdn)) { throw 'Admin UI FQDN is required.' }
-    $base = "https://$AdminUiFqdn"
-    Invoke-GraphJsonBody -Method 'PATCH' -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)" -Body @{
-        isFallbackPublicClient = $false
-        web = @{
-            redirectUris = @("$base/signin-oidc")
-            logoutUrl = "$base/signout-callback-oidc"
-            implicitGrantSettings = @{
-                enableAccessTokenIssuance = $false
-                enableIdTokenIssuance = $false
-            }
-        }
-    } | Out-Null
-    return [ordered]@{ signInRedirectUri = "$base/signin-oidc"; signedOutCallbackUri = "$base/signout-callback-oidc" }
-}
-
-function Set-PortableAdminUiRedirectUris {
-    param(
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][int]$AdminUiHostPort
-    )
-
-    if ($AdminUiHostPort -lt 1 -or $AdminUiHostPort -gt 65535) {
-        throw 'Portable Admin UI host port is out of range.'
-    }
-
-    $base = "http://127.0.0.1:$AdminUiHostPort"
-    Invoke-GraphJsonBody -Method 'PATCH' -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)" -Body @{
-        isFallbackPublicClient = $false
-        web = @{
-            redirectUris = @("$base/signin-oidc")
-            logoutUrl = "$base/signout-callback-oidc"
-            implicitGrantSettings = @{
-                enableAccessTokenIssuance = $false
-                enableIdTokenIssuance = $false
-            }
-        }
-    } | Out-Null
-    return [ordered]@{
-        adminUiUrl = $base
-        signInRedirectUri = "$base/signin-oidc"
-        signedOutCallbackUri = "$base/signout-callback-oidc"
-    }
-}
-
-function New-PortableAdminUiClientSecret {
-    param(
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][string]$SecretPath
-    )
-
-    $secretDirectory = Split-Path -Parent $SecretPath
-    if (-not (Test-Path -LiteralPath $secretDirectory)) {
-        New-Item -ItemType Directory -Path $secretDirectory -Force | Out-Null
-    }
-
-    $application = Invoke-AzJson -Arguments @(
-        'rest', '--method', 'GET', '--url',
-        "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=id,appId,passwordCredentials"
-    )
-    $credentials = @($application.passwordCredentials)
-    if ($credentials.Count -gt 1 -or
-        ($credentials.Count -eq 1 -and [string]$credentials[0].displayName -cne 'a365gw-bootstrap-admin-ui')) {
-        throw 'Portable Admin UI credential surface is outside the bootstrap-owned secret boundary.'
-    }
-
-    if ($credentials.Count -eq 1 -and (Test-Path -LiteralPath $SecretPath)) {
-        $existing = [IO.File]::ReadAllText($SecretPath).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($existing)) {
-            return [ordered]@{
-                adminUiClientSecret = $existing
-                credentialKeyId = [string]$credentials[0].keyId
-                reused = $true
-            }
-        }
-    }
-
-    if ($credentials.Count -eq 1) {
-        Invoke-GraphJsonBody `
-            -Method 'POST' `
-            -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/removePassword" `
-            -Body @{ keyId = [string]$credentials[0].keyId } | Out-Null
-    }
-
-    $credential = Invoke-GraphJsonBody `
-        -Method 'POST' `
-        -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/addPassword" `
-        -Body @{
-            passwordCredential = @{
-                displayName = 'a365gw-bootstrap-admin-ui'
-                endDateTime = [DateTimeOffset]::UtcNow.AddYears(1).ToString('O')
-            }
-        }
-
-    $secretText = [string]$credential.secretText
-    if ([string]::IsNullOrWhiteSpace($secretText)) {
-        throw 'Microsoft Graph did not return the one-time portable Admin UI credential.'
-    }
-
-    Set-Content -LiteralPath $SecretPath -Value $secretText -Encoding utf8 -NoNewline
-    return [ordered]@{
-        adminUiClientSecret = $secretText
-        credentialKeyId = [string]$credential.keyId
-        reused = $false
-    }
-}
-
-function Ensure-PortableConsoleApplication {
+function Ensure-RuntimeConsoleApplication {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Identity,
@@ -1973,7 +813,7 @@ function Ensure-PortableConsoleApplication {
     )
 
     if ($ConsoleHostPort -lt 1 -or $ConsoleHostPort -gt 65535) {
-        throw 'Portable Console host port is out of range.'
+        throw 'Runtime Console host port is out of range.'
     }
 
     $displayName = "A365 Gateway Console - $($Config.projectName)-$($Config.environment)"
@@ -2000,7 +840,7 @@ function Ensure-PortableConsoleApplication {
         'rest', '--method', 'GET', '--url',
         "https://graph.microsoft.com/v1.0/applications/$($application.id)?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient"
     )
-    Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Portable Console application' | Out-Null
+    Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Runtime Console application' | Out-Null
 
     $spaRedirects = @($application.spa.redirectUris | ForEach-Object { [string]$_ })
     $apiRequirements = @($application.requiredResourceAccess)
@@ -2018,7 +858,7 @@ function Ensure-PortableConsoleApplication {
         @($application.web.redirectUris).Count -ne 0 -or
         @($application.publicClient.redirectUris).Count -ne 0 -or
         -not $exactRequiredScope) {
-        throw 'Portable Console application does not match the exact SPA, permission, and credential-free boundary.'
+        throw 'Runtime Console application does not match the exact SPA, permission, and credential-free boundary.'
     }
 
     if ($spaRedirects.Count -ne 1 -or $spaRedirects[0] -cne $consoleOrigin) {
@@ -2057,7 +897,7 @@ function Ensure-PortableConsoleApplication {
         -not ([string]$grant[0].resourceId).Equals([string]$Identity.gatewayApiServicePrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$grant[0].consentType -cne 'AllPrincipals' -or
         -not (Test-ExactStringSet -Actual $grantScopes -Expected @('access_as_user'))) {
-        throw 'Portable Console delegated consent must be exactly one tenant-wide access_as_user grant to this Gateway API.'
+        throw 'Runtime Console delegated consent must be exactly one tenant-wide access_as_user grant to this Gateway API.'
     }
 
     return [ordered]@{
@@ -2067,445 +907,6 @@ function Ensure-PortableConsoleApplication {
         consoleUrl = $consoleOrigin
         apiScope = "$([string]$Identity.gatewayApiScopeBaseUri)/access_as_user"
         deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
-    }
-}
-
-function Get-BootstrapDeterministicRoleAssignmentName {
-    param([Parameter(Mandatory)][string]$Scope, [Parameter(Mandatory)][string]$PrincipalId)
-
-    $fingerprint = Get-BootstrapSha256 -Text "a365gw-bootstrap-admin-ui-kv-officer-v1|$($Scope.ToLowerInvariant())|$($PrincipalId.ToLowerInvariant())"
-    $hex = $fingerprint.Substring('sha256:'.Length, 32)
-    return "$($hex.Substring(0, 8))-$($hex.Substring(8, 4))-$($hex.Substring(12, 4))-$($hex.Substring(16, 4))-$($hex.Substring(20, 12))"
-}
-
-function Get-ExactBootstrapRoleAssignment {
-    param(
-        [Parameter(Mandatory)][string]$Scope,
-        [Parameter(Mandatory)][string]$AssignmentId
-    )
-
-    $assignments = @(Invoke-AzJsonArray -OperationLabel 'Temporary Key Vault role-assignment discovery' -Arguments @(
-        'role', 'assignment', 'list', '--scope', $Scope, '--include-inherited',
-        '--query', '[].{id:id,principalId:principalId,scope:scope,roleDefinitionId:roleDefinitionId}'
-    ))
-    return @($assignments | Where-Object {
-        ([string]$_.id).Equals($AssignmentId, [StringComparison]::OrdinalIgnoreCase)
-    })
-}
-
-function Wait-ExactBootstrapRoleAssignmentAbsent {
-    param(
-        [Parameter(Mandatory)][string]$Scope,
-        [Parameter(Mandatory)][string]$AssignmentId,
-        [Parameter(Mandatory)][string]$PrincipalId,
-        [Parameter(Mandatory)][string]$RoleDefinitionId,
-        [ValidateRange(2, 10)][int]$RequiredConsecutiveAbsenceReads = 3,
-        [ValidateRange(3, 30)][int]$MaximumAttempts = 18
-    )
-
-    $consecutiveAbsenceReads = 0
-    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
-        $assignments = @(Get-ExactBootstrapRoleAssignment -Scope $Scope -AssignmentId $AssignmentId)
-        if ($assignments.Count -gt 1) {
-            throw 'The deterministic temporary Key Vault role assignment is ambiguous during absence verification.'
-        }
-        if ($assignments.Count -eq 1) {
-            $assignment = $assignments[0]
-            if (-not ([string]$assignment.principalId).Equals($PrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$assignment.scope).Equals($Scope, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$assignment.roleDefinitionId).Equals($RoleDefinitionId, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'The deterministic temporary Key Vault role-assignment ID changed authority during absence verification.'
-            }
-            $consecutiveAbsenceReads = 0
-        }
-        else {
-            $consecutiveAbsenceReads++
-            if ($consecutiveAbsenceReads -ge $RequiredConsecutiveAbsenceReads) { return $true }
-        }
-        if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
-    }
-    return $false
-}
-
-function Get-AdminUiCredentialEvidenceFromMetadata {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [ValidateRange(1, 30)][int]$MaximumAttempts = 18
-    )
-
-    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
-        try {
-            $state = Get-AdminUiCredentialReconciliationState `
-                -Config $Config `
-                -AdminIdentity $AdminIdentity `
-                -KeyVaultUri $KeyVaultUri `
-                -DeploymentOwnershipId $DeploymentOwnershipId `
-                -SourceFingerprint $SourceFingerprint
-            if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
-        }
-        catch { }
-        if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
-    }
-    throw 'Admin UI credential metadata was not observed with the exact bootstrap-owned Graph and ARM boundary during the bounded readback window.'
-}
-
-function Get-AdminUiCredentialReconciliationState {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
-    )
-
-    $applicationObjectId = [guid]::Empty
-    $clientId = [guid]::Empty
-    $ownershipId = [guid]::Empty
-    $subscriptionId = [guid]::Empty
-    if (-not [guid]::TryParse([string]$AdminIdentity.adminUiApplicationObjectId, [ref]$applicationObjectId) -or
-        $applicationObjectId -eq [guid]::Empty -or
-        -not [guid]::TryParse([string]$AdminIdentity.adminUiClientId, [ref]$clientId) -or
-        $clientId -eq [guid]::Empty -or
-        -not [guid]::TryParse([string]$Config.subscriptionId, [ref]$subscriptionId) -or
-        $subscriptionId -eq [guid]::Empty -or
-        [string]$Config.subscriptionId -cne $subscriptionId.ToString('D') -or
-        [string]$Config.resourceGroupName -cnotmatch '^[A-Za-z0-9._()\-]{1,90}$' -or
-        [string]$Config.resourceGroupName -match '[.]$' -or
-        -not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
-        $ownershipId -eq [guid]::Empty -or
-        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
-        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
-        throw 'Admin UI credential reconciliation identity or ownership evidence is invalid.'
-    }
-    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential reconciliation source fingerprint'
-
-    $vault = $null
-    if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
-        $vault.Scheme -cne 'https' -or -not $vault.IsDefaultPort -or
-        -not [string]::IsNullOrEmpty($vault.UserInfo) -or
-        -not [string]::IsNullOrEmpty($vault.Query) -or
-        -not [string]::IsNullOrEmpty($vault.Fragment) -or
-        $vault.AbsolutePath -cne '/' -or
-        $vault.DnsSafeHost -cnotmatch '^[a-z][a-z0-9-]{2,23}[.]vault[.]azure[.]net$') {
-        throw 'Admin UI credential reconciliation requires one exact HTTPS Key Vault origin.'
-    }
-
-    $application = $null
-    $metadata = $null
-    try {
-        $application = Invoke-AzJson -Arguments @(
-            'rest', '--method', 'GET', '--url',
-            "https://graph.microsoft.com/v1.0/applications/$($applicationObjectId.ToString('D'))?`$select=appId,passwordCredentials"
-        )
-        if ($null -eq $application -or
-            -not ([string](Get-OptionalObjectPropertyValue -InputObject $application -PropertyName 'appId')).Equals($clientId.ToString('D'), [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'graph-mismatch'
-        }
-        if ($application -is [Collections.IDictionary]) {
-            if (-not $application.Contains('passwordCredentials')) { throw 'graph-shape' }
-            $credentials = @($application['passwordCredentials'])
-        }
-        else {
-            $credentialProperty = $application.PSObject.Properties['passwordCredentials']
-            if ($null -eq $credentialProperty) { throw 'graph-shape' }
-            $credentials = @($credentialProperty.Value)
-        }
-        $metadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
-            -Config $Config `
-            -KeyVaultUri $KeyVaultUri `
-            -DeploymentOwnershipId $ownershipId.ToString('D') `
-            -SourceFingerprint $SourceFingerprint
-    }
-    catch {
-        throw 'Admin UI credential reconciliation could not read the exact Graph and ARM metadata boundary.'
-    }
-
-    $graphStatus = 'Mismatch'
-    $credential = $null
-    $expires = [DateTimeOffset]::MinValue
-    $credentialKeyId = [guid]::Empty
-    if ($credentials.Count -eq 0) {
-        $graphStatus = 'Absent'
-    }
-    elseif ($credentials.Count -eq 1 -and
-        [string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'displayName') -ceq 'a365gw-bootstrap-admin-ui' -and
-        [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'keyId'), [ref]$credentialKeyId) -and
-        $credentialKeyId -ne [guid]::Empty -and
-        [DateTimeOffset]::TryParse(
-            [string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'endDateTime'),
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind,
-            [ref]$expires) -and
-        $expires.ToUniversalTime() -gt [DateTimeOffset]::UtcNow) {
-        $graphStatus = 'Present'
-        $credential = $credentials[0]
-    }
-
-    $armStatus = [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'status')
-    if ($armStatus -cnotin @('Present', 'Absent')) {
-        throw 'Admin UI credential reconciliation received an unsupported ARM metadata state.'
-    }
-    if ($graphStatus -ceq 'Absent' -and $armStatus -ceq 'Absent') {
-        return [pscustomobject][ordered]@{ status = 'DoubleAbsent' }
-    }
-
-    if ($graphStatus -ceq 'Present' -and $armStatus -ceq 'Present') {
-        $vaultName = $vault.DnsSafeHost.Substring(0, $vault.DnsSafeHost.IndexOf('.'))
-        $expectedSecretResourceId = "/subscriptions/$($subscriptionId.ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/admin-ui-entra-client-secret"
-        $tags = Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'tags'
-        $tagNames = if ($tags -is [Collections.IDictionary]) {
-            @($tags.Keys | ForEach-Object { [string]$_ })
-        }
-        elseif ($null -ne $tags) {
-            @($tags.PSObject.Properties.Name | ForEach-Object { [string]$_ })
-        }
-        else { @() }
-        $metadataKeyId = [guid]::Empty
-        $exactPair =
-            $tagNames.Count -eq 4 -and
-            @(@('managedBy', 'credentialKeyId', 'bootstrapOwnershipId', 'bootstrapSourceFingerprint') |
-                Where-Object { $tagNames -cnotcontains $_ }).Count -eq 0 -and
-            ([string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'id')).Equals($expectedSecretResourceId, [StringComparison]::OrdinalIgnoreCase) -and
-            [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'name') -ceq 'admin-ui-entra-client-secret' -and
-            (Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'enabled') -eq $true -and
-            [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'contentType') -ceq 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -and
-            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'managedBy') -ceq 'a365gw-bootstrap' -and
-            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'bootstrapOwnershipId') -ceq $ownershipId.ToString('D') -and
-            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'bootstrapSourceFingerprint') -ceq $SourceFingerprint -and
-            [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'credentialKeyId'), [ref]$metadataKeyId) -and
-            $metadataKeyId -ne [guid]::Empty -and
-            $metadataKeyId -eq $credentialKeyId
-        if ($exactPair) {
-            return [pscustomobject][ordered]@{
-                status = 'ExactPair'
-                evidence = [ordered]@{
-                    secretUri = "$($KeyVaultUri.TrimEnd('/'))/secrets/admin-ui-entra-client-secret"
-                    credentialKeyId = $credentialKeyId.ToString('D')
-                    credentialExpiresAtUtc = $expires.ToUniversalTime().ToString('O')
-                    deploymentOwnershipId = $ownershipId.ToString('D')
-                    sourceFingerprint = $SourceFingerprint
-                    contentType = 'application/vnd.a365-gateway.admin-ui-entra-client-secret'
-                }
-            }
-        }
-    }
-
-    return [pscustomobject][ordered]@{ status = 'PartialOrMismatch' }
-}
-
-function Resolve-AdminUiCredentialAfterStartedOutcome {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$UserObjectId,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter()][string]$ExecutionSourceFingerprint = ''
-    )
-
-    Assert-GuidValue -Value $UserObjectId -Label 'Admin UI credential operator object ID'
-    $ownershipId = [guid]::Empty
-    if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
-        $ownershipId -eq [guid]::Empty -or
-        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
-        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
-        throw 'Admin UI credential recovery ownership evidence is invalid.'
-    }
-    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential recovery source fingerprint'
-    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
-    $null = Resolve-GatewayCredentialDeploymentTemplate `
-        -RelativeTemplate 'bootstrap/infra/admin-ui-credential.bicep' `
-        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-    $vault = $null
-    if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
-        $vault.Scheme -cne 'https' -or -not $vault.IsDefaultPort -or
-        -not [string]::IsNullOrEmpty($vault.UserInfo) -or
-        -not [string]::IsNullOrEmpty($vault.Query) -or
-        -not [string]::IsNullOrEmpty($vault.Fragment) -or
-        $vault.AbsolutePath -cne '/' -or
-        $vault.DnsSafeHost -cnotmatch '^[a-z][a-z0-9-]{2,23}[.]vault[.]azure[.]net$') {
-        throw 'Admin UI credential recovery requires one exact HTTPS Key Vault origin.'
-    }
-    $vaultName = $vault.DnsSafeHost.Substring(0, $vault.DnsSafeHost.IndexOf('.'))
-    $scope = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName"
-    $assignmentName = Get-BootstrapDeterministicRoleAssignmentName -Scope $scope -PrincipalId $UserObjectId
-    $assignmentId = "$scope/providers/Microsoft.Authorization/roleAssignments/$assignmentName"
-    $roleDefinitionId = "/subscriptions/$(([guid]$Config.subscriptionId).ToString('D'))/providers/Microsoft.Authorization/roleDefinitions/$script:KeyVaultSecretsOfficerRoleId"
-
-    $assignments = @(Get-ExactBootstrapRoleAssignment -Scope $scope -AssignmentId $assignmentId)
-    if ($assignments.Count -gt 1) {
-        throw 'The bootstrap-owned temporary Key Vault role assignment is ambiguous during recovery.'
-    }
-    if ($assignments.Count -eq 1) {
-        $assignment = $assignments[0]
-        if (-not ([string]$assignment.principalId).Equals($UserObjectId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$assignment.scope).Equals($scope, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$assignment.roleDefinitionId).Equals($roleDefinitionId, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'The deterministic temporary Key Vault role assignment belongs to different authority; refusing recovery deletion.'
-        }
-        Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
-            'role', 'assignment', 'delete', '--ids', $assignmentId, '--only-show-errors'
-        ) | Out-Null
-    }
-
-    $removed = Wait-ExactBootstrapRoleAssignmentAbsent `
-        -Scope $scope `
-        -AssignmentId $assignmentId `
-        -PrincipalId $UserObjectId `
-        -RoleDefinitionId $roleDefinitionId
-    if (-not $removed) {
-        throw 'The bootstrap-owned temporary Key Vault role assignment could not be proven removed during recovery.'
-    }
-
-    $consecutiveDoubleAbsenceReads = 0
-    for ($attempt = 1; $attempt -le 18; $attempt++) {
-        $state = Get-AdminUiCredentialReconciliationState `
-            -Config $Config `
-            -AdminIdentity $AdminIdentity `
-            -KeyVaultUri $KeyVaultUri `
-            -DeploymentOwnershipId $ownershipId.ToString('D') `
-            -SourceFingerprint $SourceFingerprint
-        if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
-        if ([string]$state.status -ceq 'PartialOrMismatch') {
-            throw 'Admin UI credential recovery found partial or mismatched provider state. Use the reviewed credential-rotation procedure; no mutation was attempted.'
-        }
-        if ([string]$state.status -cne 'DoubleAbsent') {
-            throw 'Admin UI credential recovery received an unsupported reconciliation state.'
-        }
-        $consecutiveDoubleAbsenceReads++
-        if ($consecutiveDoubleAbsenceReads -ge 3) { break }
-        if ($attempt -lt 18) { Start-Sleep -Seconds 5 }
-    }
-    if ($consecutiveDoubleAbsenceReads -lt 3) {
-        throw 'Admin UI credential recovery could not prove consecutive exact absence in both providers.'
-    }
-    return New-AdminUiCredentialInKeyVault `
-        -Config $Config `
-        -AdminIdentity $AdminIdentity `
-        -KeyVaultUri $KeyVaultUri `
-        -DeploymentOwnershipId $ownershipId.ToString('D') `
-        -SourceFingerprint $SourceFingerprint `
-        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-}
-
-function New-AdminUiCredentialInKeyVault {
-    param(
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$AdminIdentity,
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter()][string]$ExecutionSourceFingerprint = ''
-    )
-
-    $ownershipId = [guid]::Empty
-    if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
-        $ownershipId -eq [guid]::Empty -or
-        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
-        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
-        throw 'Admin UI credential creation ownership evidence is invalid.'
-    }
-    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential creation source fingerprint'
-    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
-    $null = Resolve-GatewayCredentialDeploymentTemplate `
-        -RelativeTemplate 'bootstrap/infra/admin-ui-credential.bicep' `
-        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-
-    $credential = $null
-    $secretText = $null
-    $passwordRequest = $null
-    $secretMetadata = $null
-    try {
-        $state = Get-AdminUiCredentialReconciliationState `
-            -Config $Config `
-            -AdminIdentity $AdminIdentity `
-            -KeyVaultUri $KeyVaultUri `
-            -DeploymentOwnershipId $ownershipId.ToString('D') `
-            -SourceFingerprint $SourceFingerprint
-        if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
-        if ([string]$state.status -cne 'DoubleAbsent') {
-            throw 'Admin UI credential creation found partial or mismatched provider state. Use the reviewed credential-rotation procedure; no mutation was attempted.'
-        }
-
-        $passwordRequest = [ordered]@{
-            passwordCredential = [ordered]@{
-                displayName = 'a365gw-bootstrap-admin-ui'
-                endDateTime = [DateTimeOffset]::UtcNow.AddYears(1).ToString('O')
-            }
-        }
-        try {
-            $credential = Invoke-GraphJsonBody `
-                -Method 'POST' `
-                -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/addPassword" `
-                -Body $passwordRequest
-        }
-        catch {
-            throw 'Microsoft Graph returned an unknown Admin UI credential-creation outcome. Resume must reconcile exact provider metadata before any further mutation.'
-        }
-
-        $credentialKeyId = [guid]::Empty
-        if (-not [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $credential -PropertyName 'keyId'), [ref]$credentialKeyId) -or
-            $credentialKeyId -eq [guid]::Empty) {
-            throw 'Microsoft Graph did not return one valid Admin UI credential key ID.'
-        }
-        $secretText = [string]$credential.secretText
-        if ([string]::IsNullOrEmpty($secretText)) { throw 'Microsoft Graph did not return the one-time Admin UI credential.' }
-
-        try {
-            $secretMetadata = Deploy-GatewayAdminUiCredentialSecret `
-                -Config $Config `
-                -KeyVaultUri $KeyVaultUri `
-                -CredentialKeyId $credentialKeyId.ToString('D') `
-                -SecretText $secretText `
-                -DeploymentOwnershipId $ownershipId.ToString('D') `
-                -SourceFingerprint $SourceFingerprint `
-                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-        }
-        catch {
-            try {
-                $secretMetadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
-                    -Config $Config `
-                    -KeyVaultUri $KeyVaultUri `
-                    -DeploymentOwnershipId $ownershipId.ToString('D') `
-                    -SourceFingerprint $SourceFingerprint
-            }
-            catch {
-                throw 'The one ARM secret deployment returned an unknown outcome and exact metadata reconciliation did not prove success. No deployment was repeated.'
-            }
-        }
-        # The full Graph-plus-ARM classifier below is the single authoritative
-        # proof. It independently re-reads the child resource and rejects an
-        # absent, mismatched, disabled, wrong-owner, or wrong-source result.
-        return Get-AdminUiCredentialEvidenceFromMetadata `
-            -Config $Config `
-            -AdminIdentity $AdminIdentity `
-            -KeyVaultUri $KeyVaultUri `
-            -DeploymentOwnershipId $ownershipId.ToString('D') `
-            -SourceFingerprint $SourceFingerprint
-    }
-    finally {
-        if ($credential) {
-            if ($credential -is [Collections.IDictionary]) {
-                if ($credential.Contains('secretText')) { $credential['secretText'] = $null }
-            }
-            else {
-                $secretProperty = $credential.PSObject.Properties['secretText']
-                if ($null -ne $secretProperty) { $secretProperty.Value = $null }
-            }
-        }
-        $secretText = $null
-        $secretMetadata = $null
-        if ($passwordRequest) {
-            if ($passwordRequest.passwordCredential) { $passwordRequest.passwordCredential.Clear() }
-            $passwordRequest.Clear()
-        }
-        $passwordRequest = $null
-        $credential = $null
     }
 }
 

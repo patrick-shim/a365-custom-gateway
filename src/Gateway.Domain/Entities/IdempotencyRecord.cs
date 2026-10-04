@@ -3,7 +3,7 @@ namespace Gateway.Domain.Entities;
 public class IdempotencyRecord
 {
     public Guid Id { get; set; }
-    public Guid? AgentRegistrationId { get; set; }
+    public Guid AgentRegistrationId { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
     public string RequestBodyHash { get; set; } = string.Empty;
     public string Endpoint { get; set; } = string.Empty;

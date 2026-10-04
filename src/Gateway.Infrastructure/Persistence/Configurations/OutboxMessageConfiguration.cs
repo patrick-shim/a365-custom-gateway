@@ -20,9 +20,9 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
             .IsRequired();
 
         builder.HasIndex(e => new { e.Status, e.NextRetryAtUtc })
-            .HasFilter("[Status] = 'Pending'");
+            .HasFilter("\"Status\" = 'Pending'");
         builder.HasIndex("Destination", nameof(OutboxMessage.Status), nameof(OutboxMessage.NextRetryAtUtc))
             .HasDatabaseName("IX_OutboxMessages_Destination_Status_NextRetryAtUtc")
-            .HasFilter("[Status] IN ('Pending', 'Processing')");
+            .HasFilter("\"Status\" IN ('Pending', 'Processing')");
     }
 }

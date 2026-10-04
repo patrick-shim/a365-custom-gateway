@@ -1,8 +1,0 @@
-<CopyableValue Label="@Label" Value="@Command" Rows="5" CopyLabel="Copy command"
-               CopiedMessage="Command copied."
-               UnavailableMessage="Copy was unavailable. Select the command and copy it manually." />
-
-@code {
-    [Parameter, EditorRequired] public string Command { get; set; } = string.Empty;
-    [Parameter] public string Label { get; set; } = "Windows PowerShell command";
-}

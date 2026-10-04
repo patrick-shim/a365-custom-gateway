@@ -41,30 +41,4 @@ public class HealthController : ControllerBase
         }
     }
 
-    [HttpGet("health/bootstrap-attestation")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
-    public async Task<IActionResult> GetBootstrapAttestation(
-        [FromServices] IDatabaseBootstrapAttestationService database,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (await database.AttestAsync(cancellationToken))
-                return Ok(new { status = "Attested", contractVersion = 1 });
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            // The anonymous response is intentionally bounded. Provider/schema/
-            // principal detail must never cross this health boundary.
-        }
-
-        return StatusCode(
-            StatusCodes.Status503ServiceUnavailable,
-            new { status = "Unavailable", contractVersion = 1 });
-    }
 }

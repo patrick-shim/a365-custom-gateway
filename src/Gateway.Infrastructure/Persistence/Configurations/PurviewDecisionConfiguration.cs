@@ -15,7 +15,7 @@ internal sealed class PurviewDecisionConfiguration : IEntityTypeConfiguration<Pu
         builder.Property(e => e.Decision).HasConversion<string>().HasMaxLength(40);
         builder.Property(e => e.PolicyAction).HasMaxLength(30);
         builder.Property(e => e.ExecutionMode).HasConversion<string>().HasMaxLength(20);
-        builder.Property(e => e.ProtectionScopeId).HasMaxLength(256);
+        builder.Property(e => e.ProtectionScopeState).HasMaxLength(256);
         builder.Property(e => e.TenantUserObjectId).HasMaxLength(64);
 
         builder.HasIndex(e => new { e.AgentRegistrationId, e.EvaluatedAtUtc }).IsDescending(false, true);

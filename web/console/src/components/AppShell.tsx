@@ -1,176 +1,54 @@
-import { ReactNode } from "react";
+import { Switch } from "@fluentui/react-components";
+import { useConsoleTheme } from "./ConsoleThemeProvider";
+import { ReactNode, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { makeStyles, tokens, Text, Caption1, Badge } from "@fluentui/react-components";
-import {
-  Home24Regular,
-  Bot24Regular,
-  Settings24Regular,
-  ShieldTask24Regular,
-  PlugConnected24Regular,
-  Database24Regular,
-  Flow24Regular,
-} from "@fluentui/react-icons";
+import { Home24Regular, Bot24Regular, Settings24Regular, ShieldTask24Regular, PlugConnected24Regular, Flow24Regular, ShieldCheckmark24Regular, Navigation24Regular, Dismiss24Regular } from "@fluentui/react-icons";
 
-const useStyles = makeStyles({
-  app: {
-    display: "grid",
-    gridTemplateColumns: "260px 1fr",
-    minHeight: "100vh",
-    backgroundColor: tokens.colorNeutralBackground2,
-    "@media (max-width: 760px)": { gridTemplateColumns: "1fr" },
-  },
-  sidebar: {
-    backgroundColor: tokens.colorNeutralBackground1,
-    borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
-    display: "flex",
-    flexDirection: "column",
-    padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalM}`,
-    gap: tokens.spacingVerticalM,
-    "@media (max-width: 760px)": {
-      borderRightWidth: 0,
-      borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
-      flexDirection: "row",
-      flexWrap: "wrap",
-    },
-  },
-  brand: {
-    display: "flex",
-    alignItems: "center",
-    gap: tokens.spacingHorizontalS,
-    padding: `0 ${tokens.spacingHorizontalS}`,
-  },
-  brandMark: {
-    width: "32px",
-    height: "32px",
-    borderRadius: tokens.borderRadiusMedium,
-    background: `linear-gradient(135deg, ${tokens.colorBrandBackground}, ${tokens.colorPaletteBerryBackground3})`,
-  },
-  group: { display: "flex", flexDirection: "column", gap: "2px" },
-  groupLabel: {
-    textTransform: "uppercase",
-    letterSpacing: "0.04em",
-    color: tokens.colorNeutralForeground3,
-    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalS} ${tokens.spacingVerticalXS}`,
-  },
-  link: {
-    display: "flex",
-    alignItems: "center",
-    gap: tokens.spacingHorizontalS,
-    padding: `${tokens.spacingVerticalSNudge} ${tokens.spacingHorizontalS}`,
-    borderRadius: tokens.borderRadiusMedium,
-    color: tokens.colorNeutralForeground1,
-    textDecoration: "none",
-    fontSize: tokens.fontSizeBase300,
-  },
-  linkActive: {
-    backgroundColor: tokens.colorNeutralBackground1Selected,
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  main: { display: "flex", flexDirection: "column", minWidth: 0 },
-  topbar: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalXXL}`,
-    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground1,
-    gap: tokens.spacingHorizontalM,
-    flexWrap: "wrap",
-    "@media (max-width: 760px)": { padding: tokens.spacingVerticalM },
-  },
-  content: {
-    padding: tokens.spacingVerticalXXL,
-    maxWidth: "1100px",
-    width: "100%",
-    boxSizing: "border-box",
-    "@media (max-width: 760px)": { padding: tokens.spacingVerticalM },
-  },
-  spacer: { flex: 1 },
-  footer: { marginTop: "auto", padding: tokens.spacingHorizontalS },
-});
-
-interface NavItem {
-  to: string;
-  label: string;
-  icon: ReactNode;
-  end?: boolean;
-}
-
-const homeItems: NavItem[] = [
-  { to: "/", label: "Home", icon: <Home24Regular />, end: true },
-];
-
-const agentItems: NavItem[] = [
-  { to: "/agents", label: "Agents", icon: <Bot24Regular /> },
-  { to: "/register", label: "Register agent", icon: <Flow24Regular /> },
-];
-
-const dataProtectionItems: NavItem[] = [
-  { to: "/data-protection/connection", label: "Connection", icon: <PlugConnected24Regular /> },
-  { to: "/data-protection/classifiers", label: "Classifiers", icon: <Database24Regular /> },
-  { to: "/data-protection/policies", label: "Policies", icon: <ShieldTask24Regular /> },
-];
-
-const platformItems: NavItem[] = [
-  { to: "/platform", label: "Platform", icon: <Settings24Regular /> },
+const groups = [
+  { label: "Workspace", items: [{ to: "/", label: "Home", icon: <Home24Regular />, end: true }] },
+  { label: "Agents", items: [{ to: "/agents", label: "Agents", icon: <Bot24Regular /> }, { to: "/register", label: "Register agent", icon: <Flow24Regular /> }] },
+  { label: "Data protection", items: [{ to: "/data-protection/policies", label: "Policies", icon: <ShieldTask24Regular /> }] },
+  { label: "Settings", items: [{ to: "/settings", label: "Gateway settings", icon: <Settings24Regular />, end: true }, { to: "/settings/purview", label: "Purview connection", icon: <PlugConnected24Regular /> }] },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const styles = useStyles();
   const location = useLocation();
-  const section = location.pathname.startsWith("/data-protection")
-    ? "Data Protection"
-    : "Gateway Console";
-
+  const { dark, setDark } = useConsoleTheme();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const section = location.pathname.startsWith("/data-protection") ? "Data protection"
+    : location.pathname.startsWith("/settings") ? "Settings"
+    : location.pathname.startsWith("/agents") || location.pathname === "/register" ? "Agents" : "Overview";
   return (
-    <div className={styles.app}>
-      <nav className={styles.sidebar} aria-label="Primary">
-        <div className={styles.brand}>
-          <div className={styles.brandMark} aria-hidden />
-          <div>
-            <Text weight="semibold">A365 Gateway</Text>
-            <Caption1 block>Control center</Caption1>
-          </div>
+    <div className="gateway-shell">
+      <a className="skip-link" href="#main-content">Skip to content</a>
+      <nav className="gateway-sidebar" aria-label="Primary">
+        <div className="gateway-brand">
+          <span className="gateway-mark" aria-hidden="true"><Flow24Regular /></span>
+          <div><strong>A365 Gateway</strong><span>CONTROL CENTER</span></div>
         </div>
-
-        <NavGroup label="" items={homeItems} />
-        <NavGroup label="Agents" items={agentItems} />
-        <NavGroup label="Data protection" items={dataProtectionItems} />
-        <NavGroup label="Platform" items={platformItems} />
-
+        <button className="mobile-nav-toggle" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} aria-controls="gateway-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? <Dismiss24Regular /> : <Navigation24Regular />}</button>
+        <div id="gateway-navigation" className={`gateway-navigation${menuOpen ? " is-open" : ""}`}>
+          {groups.map(group => <div className="nav-group" key={group.label}>
+            <span className="nav-label">{group.label}</span>
+            {group.items.map(item => <NavLink key={item.to} to={item.to} end={'end' in item ? item.end : false}
+              onClick={() => setMenuOpen(false)} className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`}>
+              {item.icon}<span>{item.label}</span><span className="nav-indicator" aria-hidden="true" />
+            </NavLink>)}
+          </div>)}
+        </div>
+        <a className="nav-link" href="/docs" target="_blank" rel="noopener noreferrer"><Flow24Regular aria-hidden="true" /><span>API reference ↗</span></a>
+        <div className="sidebar-note"><ShieldCheckmark24Regular aria-hidden="true" /><div><strong>Your agents. Connected.</strong><span>Identity, protection & visibility.</span></div></div>
       </nav>
-
-      <div className={styles.main}>
-        <header className={styles.topbar}>
-          <Text weight="semibold">{section}</Text>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Badge appearance="outline" color="success">Identity protected · Microsoft Entra ID</Badge>
-          </div>
+      <div className="gateway-workspace">
+        <header className="gateway-topbar">
+          <div className="workspace-crumb">Workspace <span aria-hidden="true">/</span> <strong>{section}</strong></div>
+          <div className="topbar-controls"><Switch label="Dark theme" checked={dark} onChange={(_, data) => setDark(data.checked)} /><span className="identity-label"><ShieldCheckmark24Regular aria-hidden="true" /> Microsoft Entra ID</span></div>
         </header>
-        <main className={styles.content}>{children}</main>
+        <main id="main-content" tabIndex={-1} className="gateway-content">
+          <div className="route-surface" key={location.pathname}>{children}</div>
+        </main>
+        <footer className="workspace-footer"><span>A365 Gateway</span><span>One place to manage your agents.</span></footer>
       </div>
-    </div>
-  );
-}
-
-function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
-  const styles = useStyles();
-  return (
-    <div className={styles.group}>
-      {label && <Caption1 className={styles.groupLabel}>{label}</Caption1>}
-      {items.map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          end={item.end}
-          className={({ isActive }) =>
-            isActive ? `${styles.link} ${styles.linkActive}` : styles.link
-          }
-        >
-          {item.icon}
-          {item.label}
-        </NavLink>
-      ))}
     </div>
   );
 }

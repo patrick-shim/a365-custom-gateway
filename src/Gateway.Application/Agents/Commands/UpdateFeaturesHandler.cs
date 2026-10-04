@@ -21,7 +21,6 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
     private readonly IUnitOfWork _unitOfWork;
     private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
     private readonly IIdempotencyService? _idempotencyService;
-    private readonly AgentPurviewConfigurationService? _purviewConfiguration;
 
     public UpdateFeaturesHandler(
         IAgentRepository agentRepository,
@@ -30,8 +29,7 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
         IPromptShieldClient promptShieldClient,
         IUnitOfWork unitOfWork,
         ProtectionEffectiveFeatureEvaluator? protectionFeatures = null,
-        IIdempotencyService? idempotencyService = null,
-        AgentPurviewConfigurationService? purviewConfiguration = null)
+        IIdempotencyService? idempotencyService = null)
     {
         _agentRepository = agentRepository;
         _auditEventRepository = auditEventRepository;
@@ -40,7 +38,6 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
         _unitOfWork = unitOfWork;
         _protectionFeatures = protectionFeatures;
         _idempotencyService = idempotencyService;
-        _purviewConfiguration = purviewConfiguration;
     }
 
     public async Task<UpdateFeaturesResponse> Handle(UpdateFeaturesCommand request, CancellationToken cancellationToken)
@@ -53,10 +50,7 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
             : IdempotencyRequestHasher.Compute(request);
         await using var idempotencyLease =
             idempotencyKey is not null && _idempotencyService is not null
-                ? request.PurviewConfigurationIntent is not null
-                    ? await _idempotencyService.AcquireScopeInExistingTransactionAsync(
-                        agent.Id, $"/api/v1/agents/{agent.Id:D}/features", idempotencyKey, cancellationToken)
-                    : await _idempotencyService.AcquireScopeAsync(
+                ? await _idempotencyService.AcquireScopeAsync(
                     agent.Id,
                     $"/api/v1/agents/{agent.Id:D}/features",
                     idempotencyKey,
@@ -119,7 +113,7 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
                 throw new ValidationException(new Dictionary<string, string[]>
                 {
                     ["ObservabilityMode"] =
-                    ["Legacy and destination-specific observability settings must describe the same destinations."]
+                    ["Combined and destination-specific observability settings must describe the same destinations."]
                 });
             }
 
@@ -131,65 +125,17 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
         var purviewMode = request.PurviewMode is null
             ? agent.FeatureConfiguration.PurviewMode
             : Enum.Parse<PurviewMode>(request.PurviewMode);
-        var purviewUseChanged = request.PurviewEnabled == true || request.PurviewMode is not null || request.PurviewDlpProfile is not null;
-        if (purviewEnabled && purviewUseChanged && request.PurviewConfigurationIntent is null && !_purviewPolicyClient.IsEnabled)
-        {
-            throw new DomainException(
-                "Purview cannot be enabled because it is not configured for this Gateway deployment.",
+        if (request.PurviewMode is not null && request.PurviewMode != "Enforce")
+            throw new DomainException("Select existing policies on the agent Data protection tab.",
                 Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
-        }
-
-        if (purviewEnabled && purviewUseChanged &&
-            _protectionFeatures is null)
-        {
-            throw new DomainException(
-                "Purview capability and profile readiness cannot be verified.",
-                Gateway.Contracts.ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
-        }
-
-        if (purviewEnabled && request.PurviewConfigurationIntent is null &&
-            purviewUseChanged)
-        {
-            if (!Guid.TryParse(
-                    agent.BlueprintId,
-                    out var blueprintApplicationId) ||
-                blueprintApplicationId == Guid.Empty)
-            {
-                throw new DomainException(
-                    "Purview cannot be enabled until the registration has a resolved blueprint application.",
-                    Gateway.Contracts.ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
-            }
-
-            var selection = request.PurviewDlpProfile;
-            if (selection is null &&
-                agent.RequestedPurviewPolicyProfileId is { } selectedProfileId)
-            {
-                selection = new PurviewDlpProfileSelectionDto(
-                    selectedProfileId,
-                    blueprintApplicationId);
-            }
-
-            var profile =
-                await _protectionFeatures!.RequireReadyProfileAsync(
-                    blueprintApplicationId,
-                    selection,
-                    cancellationToken);
-            if (request.PurviewMode is not null && profile.Mode != purviewMode)
-            {
-                throw new DomainException(
-                    "The selected DLP profile mode does not match the requested registration mode.",
-                    Gateway.Contracts.ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
-            }
-
-            agent.RequestedPurviewPolicyProfileId = profile.Id.Value;
-            agent.RequestedPurviewPolicyMode = profile.EffectivePolicyMode;
-            purviewMode = profile.Mode;
-        }
-
         agent.FeatureConfiguration.PurviewEnabled = purviewEnabled;
-        agent.FeatureConfiguration.PurviewMode = purviewEnabled
-            ? purviewMode ?? _purviewPolicyClient.DefaultMode
-            : purviewMode;
+        agent.FeatureConfiguration.PurviewMode = purviewEnabled ? PurviewMode.Enforce : null;
+        if (purviewEnabled && request.PurviewEnabled == true)
+        {
+            if (_protectionFeatures is null) throw new DomainException("Policy readiness is unavailable.",
+                Gateway.Contracts.ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+            await _protectionFeatures.EnsureRuntimeReadyAsync(agent, cancellationToken);
+        }
         var promptShieldEnabled = request.PromptShieldEnabled
             ?? agent.FeatureConfiguration.PromptShieldEnabled;
         if (promptShieldEnabled && !_promptShieldClient.IsEnabled)
@@ -227,18 +173,6 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
         };
         await _auditEventRepository.AddAsync(auditEvent, cancellationToken);
 
-        if (request.PurviewConfigurationIntent is { } intent)
-        {
-            if (request.PurviewDlpProfile is not null)
-                throw new ValidationException(new Dictionary<string, string[]> { ["PurviewConfigurationIntent"] = ["Configuration consent and an existing profile selection cannot be combined."] });
-            if (_purviewConfiguration is null ||
-                !Guid.TryParse(agent.BlueprintId, out var blueprintApplicationId) || blueprintApplicationId == Guid.Empty)
-                throw new DomainException("A resolved blueprint is required to configure Purview.", Gateway.Contracts.ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
-            await _purviewConfiguration.ApplyAsync(agent, intent, request.CallerTenantId, request.CallerObjectId,
-                blueprintApplicationId, cancellationToken);
-            if (request.PurviewMode is { } explicitMode && explicitMode != agent.FeatureConfiguration.PurviewMode?.ToString())
-                throw new ValidationException(new Dictionary<string, string[]> { ["PurviewMode"] = ["The requested mode conflicts with the confirmed shared policy."] });
-        }
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         var destinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();

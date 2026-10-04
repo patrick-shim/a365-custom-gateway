@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 namespace Gateway.ContentSafety;
 
 /// <summary>
-/// Portable Content Safety auth: subscription key presented as a bearer stand-in
+/// Runtime Content Safety auth: subscription key presented as a bearer stand-in
 /// is not used — <see cref="PromptShieldClient"/> switches to the subscription-key
 /// header when <see cref="PromptShieldOptions.AuthMode"/> is ApiKey. This type
 /// satisfies DI and token-identity skip paths.

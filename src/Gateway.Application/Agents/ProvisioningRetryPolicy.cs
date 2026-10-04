@@ -41,8 +41,8 @@ internal static class ProvisioningRetryPolicy
                     .ToList())))
         {
             return ProvisioningRetryDecision.Rejected(
-                "Retry is unavailable because this registration has non-replayable legacy provisioning history.",
-                "RetryLegacyProvisioning");
+                "Retry is unavailable because this registration has an unsupported provisioning workflow.",
+                "RetryUnsupportedProvisioning");
         }
 
         if (provisioningJobs.Any(existing =>
@@ -158,8 +158,7 @@ internal static class ProvisioningRetryPolicy
                        DelegatedAdministratorAuthenticationMode,
                        StringComparison.Ordinal) ||
                    !TryParseNonEmptyGuid(result.State.RegistryCreatedByObjectId, out _) ||
-                   (result.State.Agent365RegistrationAcceptedAtUtc is null &&
-                    result.State.Agent365RegistrationVerifiedAtUtc is null);
+                   result.State.Agent365RegistrationAcceptedAtUtc is null;
         }
         catch (JsonException)
         {
@@ -235,7 +234,7 @@ internal static class ProvisioningRetryPolicy
             ProvisioningStepType.EnsureBlueprintPrincipal =>
                 HasValue(state.BlueprintPrincipalObjectId),
             ProvisioningStepType.ConfigureGatewayFederation =>
-                HasValue(state.GatewayManagedIdentityPrincipalId) &&
+                HasValue(state.GatewayWorkloadPrincipalId) &&
                 HasValue(state.GatewayFederatedCredentialId),
             ProvisioningStepType.CreateAgentIdentity =>
                 HasValue(state.AgentIdentityObjectId) &&
@@ -255,12 +254,11 @@ internal static class ProvisioningRetryPolicy
                     DelegatedAdministratorAuthenticationMode,
                     StringComparison.Ordinal) &&
                 TryParseNonEmptyGuid(state.RegistryCreatedByObjectId, out _) &&
-                   (state.Agent365RegistrationAcceptedAtUtc is not null ||
-                    state.Agent365RegistrationVerifiedAtUtc is not null),
+                   state.Agent365RegistrationAcceptedAtUtc is not null,
             ProvisioningStepType.VerifyAgent365Connection =>
                 state.Agent365ConnectionVerifiedAtUtc is not null &&
                 HasValue(state.BlueprintPrincipalObjectId) &&
-                HasValue(state.GatewayManagedIdentityPrincipalId) &&
+                HasValue(state.GatewayWorkloadPrincipalId) &&
                 HasValue(state.GatewayFederatedCredentialId) &&
                 HasValue(state.AgentIdentityClientId) &&
                 HasValue(state.BlueprintClientId) &&
@@ -274,20 +272,13 @@ internal static class ProvisioningRetryPolicy
         Agent365ProvisioningState previous,
         Agent365ProvisioningState current)
     {
-        return Preserves(previous.ApplicationObjectId, current.ApplicationObjectId) &&
-               Preserves(previous.ApplicationClientId, current.ApplicationClientId) &&
-               Preserves(previous.ServicePrincipalObjectId, current.ServicePrincipalObjectId) &&
-               Preserves(previous.AppRoleAssignmentId, current.AppRoleAssignmentId) &&
-               Preserves(previous.PasswordCredentialKeyId, current.PasswordCredentialKeyId) &&
-               Preserves(previous.KeyVaultSecretUri, current.KeyVaultSecretUri) &&
-               Preserves(previous.CredentialExpiresAtUtc, current.CredentialExpiresAtUtc) &&
-               Preserves(previous.BlueprintObjectId, current.BlueprintObjectId) &&
+        return Preserves(previous.BlueprintObjectId, current.BlueprintObjectId) &&
                Preserves(previous.BlueprintClientId, current.BlueprintClientId) &&
                Preserves(previous.BlueprintPrincipalObjectId, current.BlueprintPrincipalObjectId) &&
                Preserves(previous.AgentIdentityObjectId, current.AgentIdentityObjectId) &&
                Preserves(previous.AgentIdentityClientId, current.AgentIdentityClientId) &&
                Preserves(previous.ObservabilityAppRoleAssignmentId, current.ObservabilityAppRoleAssignmentId) &&
-               Preserves(previous.GatewayManagedIdentityPrincipalId, current.GatewayManagedIdentityPrincipalId) &&
+               Preserves(previous.GatewayWorkloadPrincipalId, current.GatewayWorkloadPrincipalId) &&
                Preserves(previous.GatewayFederatedCredentialId, current.GatewayFederatedCredentialId) &&
                Preserves(previous.PlannedAgent365RegistrationId, current.PlannedAgent365RegistrationId) &&
                Preserves(previous.Agent365RegistrationId, current.Agent365RegistrationId) &&
@@ -297,9 +288,6 @@ internal static class ProvisioningRetryPolicy
                Preserves(
                    previous.Agent365RegistrationAcceptedAtUtc,
                    current.Agent365RegistrationAcceptedAtUtc) &&
-               Preserves(
-                   previous.Agent365RegistrationVerifiedAtUtc,
-                   current.Agent365RegistrationVerifiedAtUtc) &&
                Preserves(
                    previous.Agent365ConnectionVerifiedAtUtc,
                    current.Agent365ConnectionVerifiedAtUtc);

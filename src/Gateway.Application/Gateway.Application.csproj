@@ -4,11 +4,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="Gateway.UnitTests" />
-    <InternalsVisibleTo Include="Gateway.SecurityTests" />
-    <InternalsVisibleTo Include="Gateway.IntegrationTests" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Gateway.Domain\Gateway.Domain.csproj" />
@@ -19,5 +14,9 @@
     <PackageReference Include="FluentValidation" Version="11.11.0" />
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gateway.RuntimeDataPlane.Tests" />
+    <InternalsVisibleTo Include="Gateway.Purview.Consumption.Tests" />
   </ItemGroup>
 </Project>

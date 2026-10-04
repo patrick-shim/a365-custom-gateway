@@ -1,4 +1,5 @@
 using FluentValidation;
+using Gateway.Contracts;
 using Gateway.Application.Agents.Commands;
 using Gateway.Domain.Enums;
 
@@ -20,23 +21,9 @@ public class UpdateFeaturesValidator : AbstractValidator<UpdateFeaturesCommand>
 
         RuleFor(x => x)
             .Must(HaveCompatibleObservabilitySettings)
-            .WithMessage("Legacy and destination-specific observability settings must describe the same destinations.")
+            .WithMessage("Combined and destination-specific observability settings must describe the same destinations.")
             .OverridePropertyName(nameof(UpdateFeaturesCommand.ObservabilityMode));
 
-        RuleFor(x => x.PurviewDlpProfile!.ProfileId)
-            .NotEmpty()
-            .When(x => x.PurviewDlpProfile is not null);
-        RuleFor(x => x.PurviewDlpProfile!.BlueprintApplicationId)
-            .NotEmpty()
-            .When(x => x.PurviewDlpProfile is not null);
-        RuleFor(x => x.PurviewDlpProfile!.ExpectedProfileRowVersion)
-            .Must(BeExpectedRowVersion)
-            .When(x =>
-                x.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
-        RuleFor(x => x.PurviewDlpProfile)
-            .Null()
-            .When(x => x.PurviewEnabled == false)
-            .WithMessage("PurviewDlpProfile cannot be selected while Purview is disabled.");
         RuleFor(x => x)
             .Must(command =>
                 (command.IdempotencyKey is null) ==
@@ -67,21 +54,5 @@ public class UpdateFeaturesValidator : AbstractValidator<UpdateFeaturesCommand>
     }
 
     private static bool BeExpectedRowVersion(string? value)
-    {
-        if (value is null)
-            return true;
-        try
-        {
-            var decoded = Convert.FromBase64String(value);
-            return decoded.Length == 8 &&
-                string.Equals(
-                    Convert.ToBase64String(decoded),
-                    value,
-                    StringComparison.Ordinal);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-    }
+        => value is null || RowVersionValidation.IsCanonical(value);
 }

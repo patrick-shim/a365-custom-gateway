@@ -7,12 +7,6 @@ public record AgentFeaturesDto(
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
     bool? PromptShieldEnabled = null,
-    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
     bool PurviewEffectivelyEnabled = false,
-    ProtectionReadinessDto? PurviewReadiness = null,
     bool PromptShieldEffectivelyEnabled = false,
-    string? PromptShieldCapabilityStatus = null,
-    string? PurviewPolicyMode = null,
-    Guid? PurviewConfigurationOperationId = null,
-    string? PurviewConfigurationStatus = null,
-    string? PurviewProfileStatus = null);
+    string? PurviewPolicyMode = null);

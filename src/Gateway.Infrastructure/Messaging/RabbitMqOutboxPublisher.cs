@@ -1,6 +1,5 @@
 using System.Text;
 using Gateway.Infrastructure.Outbox;
-using Gateway.Infrastructure.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -32,13 +31,6 @@ internal sealed class RabbitMqOutboxPublisher : IOutboxQueuePublisher, IAsyncDis
         var queueName = OutboxRouting.ResolveQueueName(
             messageType,
             _options.ProvisioningQueueName);
-        if (queueName == OutboxRouting.ProtectionAdminDestination &&
-            !string.Equals(queueName, _options.ProtectionQueueName, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "RabbitMQ protection queue must remain gateway-protection-admin-v1.");
-        }
-
         await _gate.WaitAsync(ct);
         try
         {
@@ -64,7 +56,7 @@ internal sealed class RabbitMqOutboxPublisher : IOutboxQueuePublisher, IAsyncDis
             await channel.BasicPublishAsync(
                 exchange: string.Empty,
                 routingKey: queueName,
-                mandatory: false,
+                mandatory: true,
                 basicProperties: properties,
                 body: body,
                 cancellationToken: ct);
@@ -96,7 +88,8 @@ internal sealed class RabbitMqOutboxPublisher : IOutboxQueuePublisher, IAsyncDis
             Uri = new Uri(_options.ConnectionUri)
         };
         _connection = await factory.CreateConnectionAsync(ct);
-        _channel = await _connection.CreateChannelAsync(cancellationToken: ct);
+        _channel = await _connection.CreateChannelAsync(
+            new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true), ct);
         return _channel;
     }
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { Card, Spinner, Text, Body1, Caption1, Switch } from "@fluentui/react-components";
 import { api } from "../api/client";
-import { formatTime } from "../api/display";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
 import { ErrorState } from "../components/ErrorState";
@@ -9,7 +9,6 @@ import { ErrorState } from "../components/ErrorState";
 export function Platform() {
   const qc = useQueryClient();
   const health = useQuery({ queryKey: ["health"], queryFn: api.getHealth });
-  const capabilities = useQuery({ queryKey: ["capabilities"], queryFn: api.getCapabilities });
   const config = useQuery({ queryKey: ["system-config"], queryFn: api.getSystemConfig });
   const defaults = useMutation({
     mutationFn: ({ enabled, version }: { enabled: boolean; version: string }) => api.setPromptShieldDefault(enabled, version),
@@ -24,26 +23,18 @@ export function Platform() {
   });
   return (
     <>
-      <PageHeader title="Platform" subtitle="Service health, installed capabilities, and registration defaults." />
+      <PageHeader title="Gateway settings" subtitle="Service health and registration defaults." />
+      <Card style={{ marginBottom: 16 }}>
+        <Text weight="semibold">Purview access</Text>
+        <Body1>Tenant access is a deployment setup responsibility. Use connection diagnostics to check administrative access; manage policy choices from Data protection.</Body1>
+        <Link to="/settings/purview">Open connection diagnostics</Link>
+      </Card>
       <Card style={{ marginBottom: 16 }}>
         <Text weight="semibold">Gateway API</Text>
         {health.isPending ? <Spinner size="small" label="Checking API" /> : health.isError ? (
           <ErrorState error={health.error} onRetry={() => void health.refetch()} />
         ) : <StatusPill value={health.data} />}
         <Caption1>This check does not report worker health or delivery to Agent 365.</Caption1>
-      </Card>
-      <Card style={{ marginBottom: 16 }}>
-        <Text weight="semibold">Installed capabilities</Text>
-        {capabilities.isPending ? <Spinner size="small" label="Loading capabilities" /> : capabilities.isError ? (
-          <ErrorState error={capabilities.error} onRetry={() => void capabilities.refetch()} />
-        ) : capabilities.data.length === 0 ? <Body1>No capabilities reported.</Body1> : capabilities.data.map(item => (
-          <div key={item.id} style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-            <Body1>{item.capability}</Body1><StatusPill value={item.status} />
-            <Caption1>Last checked: {formatTime(item.lastReadbackAtUtc)}</Caption1>
-            {item.lastFailureCode && <Caption1>Details: {item.lastFailureCode}</Caption1>}
-          </div>
-        ))}
-        <Caption1>Installed does not mean a policy is configured or enforcing.</Caption1>
       </Card>
       <Card style={{ marginBottom: 16 }}>
         <Text weight="semibold">Registration defaults</Text>

@@ -8,24 +8,6 @@ public sealed class UpdateSystemConfigValidator : AbstractValidator<UpdateSystem
 {
     public UpdateSystemConfigValidator()
     {
-        RuleFor(x => x.ProvisioningMode).Null()
-            .WithMessage("ProvisioningMode is a persisted compatibility value and is not an editable runtime control.");
-        RuleFor(x => x.RetentionDaysActivityReceipts).Null()
-            .WithMessage("Activity-receipt cleanup is not implemented; this compatibility value cannot be changed.");
-        RuleFor(x => x.RetentionDaysAuditEvents).Null()
-            .WithMessage("Audit-event cleanup is not implemented; this compatibility value cannot be changed.");
-        RuleFor(x => x.RetentionDaysOutboxMessages).Null()
-            .WithMessage("Outbox cleanup is not implemented; this compatibility value cannot be changed.");
-        RuleFor(x => x.ReconciliationEnabled).Null()
-            .WithMessage("Microsoft-resource reconciliation is not implemented.");
-        RuleFor(x => x.ReconciliationIntervalHours).Null()
-            .WithMessage("Microsoft-resource reconciliation is not implemented.");
-        RuleFor(x => x.StuckTransitionTimeoutDays).Null()
-            .WithMessage("No stuck-transition cleanup service consumes this compatibility value.");
-        RuleFor(x => x.UseGraphAgentRegistration).Null()
-            .WithMessage("Agent registration transport is deployment-controlled and not a database setting.");
-        RuleFor(x => x.UseCliProvisioningFallback).Null()
-            .WithMessage("The Gateway has no unattended CLI provisioning fallback.");
 
         RuleFor(x => x.RetentionDaysIdempotencyRecords)
             .InclusiveBetween(1, 3_650)
@@ -49,14 +31,10 @@ public sealed class UpdateSystemConfigValidator : AbstractValidator<UpdateSystem
             .WithMessage("DefaultObservabilityMode must be a valid value.")
             .When(x => x.DefaultObservabilityMode is not null);
 
-        RuleFor(x => x.DefaultPurviewMode)
-            .Must(BeValidPurviewMode)
-            .WithMessage("DefaultPurviewMode must be AuditOnly or Enforce.")
-            .When(x => x.DefaultPurviewMode is not null);
 
         RuleFor(x => x)
             .Must(HaveCompatibleObservabilitySettings)
-            .WithMessage("Legacy and destination-specific observability settings must describe the same destinations.")
+            .WithMessage("Combined and destination-specific observability settings must describe the same destinations.")
             .OverridePropertyName(nameof(UpdateSystemConfigCommand.DefaultObservabilityMode));
 
         RuleFor(x => x.IdempotencyKey)

@@ -7,7 +7,7 @@ namespace Gateway.Application.Protection;
 
 internal static class ProtectionRowVersion
 {
-    private const int SqlRowVersionBytes = 8;
+    private const int RowVersionBytes = 16;
 
     public static string Encode(
         byte[] rowVersion,
@@ -24,7 +24,7 @@ internal static class ProtectionRowVersion
             $"{resourceId:D}\n{updatedAtUtc.ToUniversalTime().Ticks}");
         try
         {
-            return Convert.ToBase64String(SHA256.HashData(material)[..SqlRowVersionBytes]);
+            return Convert.ToBase64String(SHA256.HashData(material)[..RowVersionBytes]);
         }
         finally
         {
@@ -42,17 +42,12 @@ internal static class ProtectionRowVersion
 
         try
         {
-            var decoded = Convert.FromBase64String(expectedRowVersion);
-            if (decoded.Length != SqlRowVersionBytes ||
-                !string.Equals(
-                    Convert.ToBase64String(decoded),
-                    expectedRowVersion,
-                    StringComparison.Ordinal))
+            if (!RowVersionValidation.IsCanonical(expectedRowVersion))
             {
                 throw Invalid();
             }
 
-            return decoded;
+            return Convert.FromBase64String(expectedRowVersion);
         }
         catch (FormatException)
         {

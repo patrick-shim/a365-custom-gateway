@@ -3,13 +3,13 @@ import { getApiToken } from "../auth/msal";
 import { config } from "../runtime-config";
 import { ApiError, readAuthorizationChallenge } from "./errors";
 import {
-  acceptedOperationSchema, agentDetailSchema, agentListSchema, blueprintListSchema,
-  capabilitiesSchema, confirmationSchema, connectionResponseSchema, credentialListSchema,
-  dlpProfilesSchema, featuresUpdateSchema, inventorySchema, issuedCredentialSchema,
-  operationResponseSchema, registrationSchema, reviewSchema, revokedCredentialSchema,
+  agentDetailSchema, agentListSchema, blueprintListSchema,
+  credentialListSchema,
+  featuresUpdateSchema, issuedCredentialSchema,
+  registrationSchema, revokedCredentialSchema,
   systemConfigSchema, registrationOperationSchema, registrationCompletionSchema,
-  provisioningHistorySchema, operationIdSchema, retryProvisioningSchema,
-  type ConnectionReview, type RegisterAgentRequest,
+  provisioningHistorySchema, operationIdSchema, retryProvisioningSchema, purviewPolicyCatalogSchema,
+  type RegisterAgentRequest,
 } from "./types";
 
 const problemSchema = z.object({
@@ -91,7 +91,27 @@ function mutationHeaders(expectedRowVersion: string, idempotencyKey: string): He
   return { "If-Match": expectedRowVersion, "Idempotency-Key": idempotencyKey };
 }
 
+const assignmentReviewSchema = z.object({ operationId: z.string().uuid(), agentId: z.string().uuid(), agentIdentityId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), expiresAtUtc: z.string(), effect: z.string() });
+const assignmentListSchema = z.object({ agentId: z.string().uuid(), agentIdentityId: z.string().nullable(), bindingCurrent: z.boolean(), allowObservedAtUtc: z.string().nullable(), blockObservedAtUtc: z.string().nullable(), items: z.array(z.object({ operationId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), status: z.enum(["Pending", "Assigned", "Failed"]), failureCode: z.string().nullable(), confirmedAtUtc: z.string().datetime({ offset: true }).nullable().optional(), expiresAtUtc: z.string().datetime({ offset: true }).optional(), assignedAtUtc: z.string().nullable() })) });
 export const api = {
+  async listAgentPolicies(agentId: string) {
+    const value = await json(assignmentListSchema, `/api/v1/agents/${encodeURIComponent(agentId)}/purview-policies`);
+    if (value.agentId !== agentId) throw new ApiError("Agent assignment response mismatch.", 502, "INVALID_API_RESPONSE");
+    return value;
+  },
+  async reviewAgentPolicy(agentId: string, policyId: string, revision: string) {
+    const value = await json(assignmentReviewSchema, `/api/v1/agents/${encodeURIComponent(agentId)}/purview-policies/review`, "POST", { policyId, revision });
+    if (value.agentId !== agentId || value.policyId !== policyId) throw new ApiError("Assignment review response mismatch.", 502, "INVALID_API_RESPONSE");
+    return value;
+  },
+  async confirmAgentPolicy(agentId: string, operationId: string) {
+    const result = await json(z.object({ operationId: z.string().uuid(), status: z.enum(["Pending", "Assigned", "Failed"]) }), `/api/v1/agents/${encodeURIComponent(agentId)}/purview-policies/${encodeURIComponent(operationId)}/confirm`, "POST", {});
+    if (result.operationId !== operationId) {
+      throw new ApiError("The confirmation did not match the reviewed assignment. Refresh its status before continuing.",
+        502, "INVALID_API_RESPONSE", undefined, true);
+    }
+    return result;
+  },
   async getHealth() {
     const response = await request("/health/checks");
     const parsed = z.enum(["Healthy", "Degraded", "Unhealthy"]).safeParse((await response.text()).trim());
@@ -173,56 +193,13 @@ export const api = {
   issueCredential: (id: string) => json(issuedCredentialSchema, `/api/v1/agents/${encodeURIComponent(id)}/credentials`, "POST"),
   revokeCredential: (id: string, keyId: string) => json(revokedCredentialSchema,
     `/api/v1/agents/${encodeURIComponent(id)}/credentials/${encodeURIComponent(keyId)}`, "DELETE"),
-  async getPurviewConnection() {
-    return (await json(connectionResponseSchema, "/api/v1/protection/purview/connection")).connection;
-  },
-  async reviewPurviewConnection(expectedRowVersion: string): Promise<ConnectionReview> {
-    const result = await json(reviewSchema, "/api/v1/protection/purview/connection-operations:review", "POST",
-      { tenantId: config.tenantId, expectedRowVersion, verificationMode: "Gateway" }, { "If-Match": expectedRowVersion });
-    if (result.review.tenantId !== config.tenantId || result.review.targetIdentifier !== config.tenantId ||
-      result.review.targetType !== "PurviewTenantConnection" ||
-      result.review.operationType !== "VerifyPurviewTenantConnection" || result.review.verificationMode !== "Gateway") {
-      throw new ApiError("The API did not review Gateway-owned verification for this tenant. Update the API and worker before continuing.",
-        200, "REVIEW_MISMATCH");
+  async listPurviewPolicies() {
+    const catalog = await json(purviewPolicyCatalogSchema, "/api/v1/protection/purview/policies");
+    const age = Date.now() - Date.parse(catalog.retrievedAtUtc);
+    if (catalog.tenantId !== config.tenantId || age > 300_000 || age < -60_000 || new Set(catalog.items.map(p => p.id)).size !== catalog.items.length) {
+      throw new ApiError("A current policy catalog for this tenant could not be confirmed.", 503, "PURVIEW_POLICY_CATALOG_INVALID");
     }
-    return { ...result, expectedRowVersion };
-  },
-  async confirmPurviewConnection(review: ConnectionReview) {
-    if (review.review.tenantId !== config.tenantId || review.review.targetIdentifier !== config.tenantId ||
-      review.review.targetType !== "PurviewTenantConnection" || review.review.operationType !== "VerifyPurviewTenantConnection" ||
-      review.review.verificationMode !== "Gateway") {
-      throw new ApiError("Review Gateway-owned verification again before confirming.", 400, "REVIEW_MISMATCH");
-    }
-    const confirmation = await json(confirmationSchema, "/api/v1/protection/operation-reviews:confirm", "POST", {
-      reviewTokenId: review.reviewTokenId, reviewToken: review.reviewToken,
-    });
-    if (confirmation.confirmationTokenId !== review.reviewTokenId) {
-      throw new ApiError("The confirmation did not match this review. Start a new review.", 200, "REVIEW_MISMATCH");
-    }
-    const idempotencyKey = crypto.randomUUID();
-    const accepted = await json(acceptedOperationSchema, "/api/v1/protection/purview/connection-operations", "POST", {
-      tenantId: review.review.tenantId, ...confirmation, idempotencyKey,
-      expectedRowVersion: review.expectedRowVersion, verificationMode: "Gateway",
-    }, mutationHeaders(review.expectedRowVersion, idempotencyKey));
-    if (accepted.operationId !== review.reviewTokenId || accepted.status !== "Pending" || accepted.companionLaunch != null) {
-      throw new ApiError("Gateway-owned verification was not confirmed. Check the reviewed operation; do not repeat the request.",
-        202, "OPERATION_MISMATCH", accepted.correlationId, true);
-    }
-    return accepted;
-  },
-  async getProtectionOperation(id: string) {
-    const result = (await json(operationResponseSchema, `/api/v1/protection/operations/${encodeURIComponent(id)}`)).operation;
-    if (result.id !== id || result.tenantId !== config.tenantId) {
-      throw new ApiError("The operation did not match this tenant and request.", 200, "OPERATION_MISMATCH");
-    }
-    return result;
-  },
-  listSensitiveInformationTypes: () => json(inventorySchema, "/api/v1/protection/purview/sensitive-information-types"),
-  async listDlpProfiles() {
-    return (await json(dlpProfilesSchema, "/api/v1/protection/purview/dlp-profiles")).items;
-  },
-  async getCapabilities() {
-    return (await json(capabilitiesSchema, "/api/v1/protection/capabilities")).items;
+    return catalog;
   },
   getSystemConfig: () => json(systemConfigSchema, "/api/v1/system/config"),
   setPromptShieldDefault(enabled: boolean, expectedRowVersion: string) {

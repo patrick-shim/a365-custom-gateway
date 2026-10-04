@@ -8,12 +8,12 @@
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
-    "portable": {
+    "runtime": {
       "commandName": "Project",
       "dotnetRunMessages": true,
       "applicationUrl": "http://localhost:5080",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Portable"
+        "ASPNETCORE_ENVIRONMENT": "Runtime"
       }
     }
   }

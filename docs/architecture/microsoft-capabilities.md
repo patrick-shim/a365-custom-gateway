@@ -1,5 +1,27 @@
 # Microsoft provider contracts
 
+## Accepted Purview direction (2026-10-03)
+
+The [policy-consumption decision](purview-policy-consumption.md) governs new work and supersedes
+older gateway policy-authoring and blueprint-selection plans in this document.
+Purview policy owners manage SITs/classifiers, rules, thresholds, actions, and
+modes. Gateway administrators select existing compatible policies from Purview
+and apply them to the exact individual agent identity, preserving all unrelated
+targets and exclusions. Never silently broaden an agent choice to its blueprint.
+
+Console structure: Data protection → Policies; each agent has a Data protection
+tab; Settings contains Gateway settings and Purview connection diagnostics.
+Tenant setup and first access verification belong in bootstrap. Management
+PowerShell access and runtime Graph processContent permissions are separate.
+The gateway exposes prompts:evaluate and calls Purview; Purview does not call a
+gateway processContent endpoint. Classifier/policy-rule editing stays in Purview.
+
+Policies come from the existing Purview catalog and assignments target individual
+agent identities. Assignment, synchronization, verified enforcement, and failures remain
+separate states. Completion requires normal allow and synthetic sensitive block
+through the gateway API plus a same-blueprint sibling isolation check. Follow the
+decision document for current implementation and evidence; plans are not proof.
+
 Contracts for the **essential Microsoft product services** this Gateway exists
 to use: **Entra, Graph, Agent 365, Purview, and Prompt Shields**.
 
@@ -53,7 +75,7 @@ The accepted operation names are `invoke_agent`, `execute_tool`, `chat` and
 `output_messages`. The public activity contract also retains Custom, which does
 not have an Agent 365 export mapping. Optional OTLP result details and a `sent`
 sink indicate only the evidence reported by that endpoint; an absent or unrouted
-destination is not independently verified portal landing.
+destination is not independently verified console landing.
 
 Provider references:
 [Agent 365 registration](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create),
@@ -104,19 +126,11 @@ The runtime certification path safely verifies roles and behavior without exposi
 raw tokens. It binds the current profile, inventory, identity and approved samples;
 stale or uncertain results cannot establish readiness.
 
-Interactive connection uses the bounded Windows companion. Noninteractive policy
-administration uses the private [Windows executor](purview-windows-executor.md).
-Both are part of the execution design. M5's private Windows runtime qualification
-does not establish a tenant connection, provider authorization or policy readiness.
-Registration and Settings can submit reviewed configuration through the same
-application service, including deferred consent for a newly created blueprint.
-
-The connection verifier requires the automation identity's separate Security &
-Compliance service-principal reference to match both ObjectId and AppId. Retained
-Entra preparation and the interactive companion do not create that reference.
-Connection/inventory proof currently expires after 15 minutes; certification
-cannot outlive it. These are source prerequisites and lifetime constraints, not
-current tenant observations.
+Bootstrap establishes certificate-authenticated management access through the
+[runtime catalog host](purview-catalog-host.md). The Console selects existing
+policies and adds individual agent targets. The gateway independently obtains
+agent tokens for Graph runtime evaluation. Management assignment readback does
+not prove runtime policy propagation or blocking.
 
 Provider references:
 [custom AI configuration](https://learn.microsoft.com/purview/developer/configurepurview),
@@ -134,9 +148,9 @@ Provider references:
 Prompt Shields is an **essential** Gateway capability. The adapter calls Microsoft
 content safety `POST /contentsafety/text:shieldPrompt` (API version 2024-09-01)
 as a **product API**, not as a reason to host the Gateway on Azure infrastructure.
-Portable runtimes authenticate with Vault-issued or non-Microsoft workload
-credentials suitable for that API; the legacy Azure infra profile may still use
-ManagedIdentityCredential. Account-key fallbacks are not used. An attack decision
+Authentication is explicitly configured as an API key or Entra client secret. These are product-service credentials, not an
+Azure hosting profile. The adapter does not silently switch authentication modes.
+An attack decision
 blocks; required protection fails closed on transport, authorization, or schema
 ambiguity.
 
@@ -148,31 +162,31 @@ Provider references (when using Azure AI Content Safety as the provider):
 [Prompt Shields operation](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01),
 [Entra authentication](https://learn.microsoft.com/azure/ai-services/authentication).
 
-## Deployment boundaries (portable vs legacy)
+## Current deployment boundaries
 
-| Area | Portable target | Legacy Azure profile (transitional) |
-|---|---|---|
-| Database | PostgreSQL (+ SQLite local/dev) | Azure SQL |
-| Queues | RabbitMQ; duplicate-safe consumers | Service Bus |
-| Secrets | OpenBao / HashiCorp Vault | Key Vault |
-| Compute / images | Compose/Kubernetes; any OCI registry digests | Container Apps + ACR |
-| Windows executor | Private Windows host; package integrity; exact worker caller | Windows App Service variant of the same contract |
-| Upgrade | Image + schema plan for the portable profile | [Azure upgrade tooling](../../operations/gateway-upgrade.md) |
+| Area | Current implementation |
+|---|---|
+| Database | PostgreSQL |
+| Queues | RabbitMQ with duplicate-safe consumers |
+| Secrets | Runtime credentials and configured OpenBao / Vault integration |
+| Compute / images | Local Compose deployment and OCI images |
+| Purview management | Local Windows catalog host with certificate authentication |
 
-Historical configuration does not establish a current target. Microsoft Graph /
-Registry / Purview API operations use the exact Entra tenant bound by the accepted
-configuration regardless of where containers run.
+Azure hosting, executor-package deployment and Azure upgrade workflows are removed.
+Microsoft Graph, Registry and Purview operations use the exact Entra tenant bound
+by the accepted configuration regardless of where containers run.
 
-## Portable credential notes
+## Runtime credential notes
 
-| Concern | Portable Compose | Azure profile |
-|---|---|---|
-| Worker → Graph | Workload **client secret** (`Agent365:ProvisioningClientSecret`) | Managed identity |
-| API → Registry OBO | API app **client secret** confidential client + **user** assertion | Managed identity / federated assertion for the API app + user assertion |
-| Observability FMI proof | Blueprint **client secret** + `fmi_path` (dev path) | Managed identity assertion + blueprint FIC |
-| Registry create | Still **delegated administrator** only (never app-only) | Same |
+| Concern | Runtime Compose |
+|---|---|
+| Worker → Graph | Workload client secret (`Agent365:ProvisioningClientSecret`) |
+| API → Registry OBO | API app client secret plus delegated user assertion |
+| Observability FMI proof | Blueprint client secret plus `fmi_path` |
+| Registry create | Delegated administrator only; never app-only |
+| Purview catalog and assignment | Dedicated management app and Windows certificate store |
 
-See [portable handoff](../portable/README.md).
+See [runtime guide](../runtime/README.md).
 
 ## Unsupported assumptions
 

@@ -27,7 +27,7 @@ public static class ObservabilityModeExtensions
         };
 
     public static bool TryResolve(
-        string? legacyMode,
+        string? combinedMode,
         bool? agent365ObservabilityEnabled,
         bool? azureMonitorExportEnabled,
         ObservabilityMode fallbackMode,
@@ -35,8 +35,8 @@ public static class ObservabilityModeExtensions
     {
         var baselineMode = fallbackMode;
 
-        if (legacyMode is not null &&
-            (!Enum.TryParse(legacyMode, ignoreCase: false, out baselineMode) ||
+        if (combinedMode is not null &&
+            (!Enum.TryParse(combinedMode, ignoreCase: false, out baselineMode) ||
              !Enum.IsDefined(baselineMode)))
         {
             resolvedMode = default;
@@ -45,7 +45,7 @@ public static class ObservabilityModeExtensions
 
         var baseline = baselineMode.ToDestinations();
 
-        if (legacyMode is not null &&
+        if (combinedMode is not null &&
             ((agent365ObservabilityEnabled.HasValue &&
               agent365ObservabilityEnabled.Value != baseline.Agent365ObservabilityEnabled) ||
              (azureMonitorExportEnabled.HasValue &&

@@ -19,18 +19,6 @@ using Scalar.AspNetCore;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddGatewayIngress(builder.Configuration);
 
-var maintenance = MaintenanceCutoverOptions.Read(builder.Configuration);
-builder.Services.AddSingleton(maintenance);
-if (maintenance.Phase == MaintenanceCutoverPhase.PreSchemaClosed)
-{
-    var closedApp = builder.Build();
-    closedApp.UseMiddleware<MaintenanceCutoverMiddleware>();
-    closedApp.Run();
-    return;
-}
-if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
-    builder.Services.AddHostedService<MaintenanceCutoverStartup>();
-
 builder.Services
     .AddMicrosoftIdentityWebApiAuthentication(builder.Configuration, "EntraId")
     .EnableTokenAcquisitionToCallDownstreamApi()
@@ -46,20 +34,6 @@ builder.Services.ConfigureAuthorizationPolicies();
 builder.Services
     .AddOptions<ProvisioningOptions>()
     .Bind(builder.Configuration.GetSection(ProvisioningOptions.SectionName));
-builder.Services
-    .AddOptions<BootstrapCapabilitiesOptions>()
-    .Bind(builder.Configuration.GetSection(
-        BootstrapCapabilitiesOptions.SectionName))
-    .ValidateOnStart();
-builder.Services.AddSingleton<
-    IValidateOptions<BootstrapCapabilitiesOptions>,
-    BootstrapCapabilitiesOptionsValidator>();
-builder.Services.AddHostedService<BootstrapCapabilitiesInitializer>();
-builder.Services.AddSingleton<BootstrapPurviewRuntimeBinding>();
-builder.Services.AddSingleton<IBootstrapPurviewRuntimeBinding>(services =>
-    services.GetRequiredService<BootstrapPurviewRuntimeBinding>());
-builder.Services.AddSingleton<IPurviewRuntimeIdentityBinding>(services =>
-    services.GetRequiredService<BootstrapPurviewRuntimeBinding>());
 builder.Services
     .AddOptions<Agent365DelegatedRegistryOptions>()
     .Bind(builder.Configuration.GetSection(Agent365DelegatedRegistryOptions.SectionName))
@@ -89,7 +63,10 @@ builder.Services.AddInfrastructureServices(builder.Configuration);
 
 builder.Services.AddAgent365Services(builder.Configuration);
 
-builder.Services.AddPurviewServices(builder.Configuration, requireRuntimeIdentityBinding: true);
+builder.Services.AddPurviewServices(builder.Configuration);
+builder.Services.Configure<RuntimePolicyAssignmentOptions>(builder.Configuration.GetSection("RuntimePolicyAssignments"));
+builder.Services.AddScoped<Gateway.Domain.Interfaces.IAgentPolicyBindingReader, AgentPolicyBindings>();
+builder.Services.AddHostedService<AgentPolicyAssignmentWorker>();
 
 builder.Services.AddPromptShieldServices(builder.Configuration);
 
@@ -97,15 +74,14 @@ builder.Services.AddGatewayObservability(builder.Configuration, GatewayServiceNa
 
 builder.Services.AddHttpClient();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddJsonOptions(options =>
+    options.JsonSerializerOptions.Converters.Add(new Gateway.Contracts.Serialization.UtcDateTimeJsonConverter()));
 
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(ApiDocumentation.Configure);
 
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<GatewayDbContext>();
 
-if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
-    MaintenanceCutoverStartup.HoldOperationalServices(builder.Services);
 
 var app = builder.Build();
 
@@ -113,14 +89,14 @@ var app = builder.Build();
 app.UseWhen(context => context.Connection.RemoteIpAddress is not null,
     ingress => ingress.UseForwardedHeaders());
 
-if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
-    app.UseMiddleware<MaintenanceCutoverMiddleware>();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<ProblemDetailsMiddleware>();
 
 app.MapOpenApi();
+app.MapOpenApi("/openapi/{documentName}.yaml");
 app.MapScalarApiReference();
+app.MapGet("/docs", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
 
 app.UseAuthentication();
 app.UseAuthorization();
