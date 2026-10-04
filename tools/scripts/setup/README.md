@@ -20,11 +20,12 @@ Source that environment file in each development shell; add the source line to y
 ## Installed and verified
 
 - Git, PowerShell 7+, Azure CLI, Bicep, Docker Engine, Compose and Buildx.
+- A working PowerShell 7+ is reused. If the Microsoft APT repository has no PowerShell candidate, the installer downloads the official 7.6.6 Linux x64 archive, verifies its pinned SHA-256, runs it, and activates a user-local symlink. Repository availability alone does not guarantee package availability.
 - .NET SDK at the exact `global.json` pin, currently 10.0.400. Verification accepts newer 10.0.4xx patches allowed by that file. An unavailable SDK is an error; no silent version substitution occurs.
 - Latest available Node.js 20 patch and bundled npm, matching the Console build image. The archive is checked against the SHA-256 published by Node.js.
 - Supporting native libraries and download/verification utilities.
 
-.NET and Node install under `~/.local/share/a365-gateway/devtools`; system copies are not replaced. Bicep uses Azure CLI's current-user installation. System packages use Microsoft and Docker repositories for the detected Ubuntu release, with package signature verification enabled. Existing conflicting Docker distribution packages cause a clear stop; they are not uninstalled automatically. The script starts and enables the Docker service.
+.NET, Node and the PowerShell archive fallback install under `~/.local/share/a365-gateway/devtools`; system copies are not replaced. Bicep uses Azure CLI's current-user installation. System packages use Microsoft and Docker repositories for the detected Ubuntu release, with package signature verification enabled. Existing conflicting Docker distribution packages cause a clear stop; they are not uninstalled automatically. The script starts and enables the Docker service.
 
 Verification checks every command, the repository's resolved SDK version and Docker daemon access from the current login. Exit 0 means checks passed; exit 1 means installation failed; exit 2 means verification or a session/access action remains. It can be rerun after fixing a reported problem.
 

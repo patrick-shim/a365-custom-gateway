@@ -44,7 +44,7 @@ esac
 tool_root="$HOME/.local/share/a365-gateway/devtools"
 environment_file="$HOME/.config/a365-gateway/devtools.env"
 export DOTNET_ROOT="$tool_root/dotnet"
-export PATH="$tool_root/node/bin:$DOTNET_ROOT:$PATH"
+export PATH="$tool_root/powershell:$tool_root/node/bin:$DOTNET_ROOT:$PATH"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 export AZURE_CORE_COLLECT_TELEMETRY=false
@@ -125,11 +125,41 @@ cleanup() {
 trap cleanup EXIT
 download() { curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 "$1" -o "$2"; }
 
-log 'Install PowerShell from Microsoft packages'
-download "https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb" "$temporary_dir/microsoft-prod.deb"
-sudo dpkg -i "$temporary_dir/microsoft-prod.deb"
-sudo apt-get update
-sudo apt-get install -y powershell
+install_powershell_archive() {
+  # Reviewed stable Microsoft release; checksum from its published hashes.sha256.
+  local version=7.6.6
+  local checksum=ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc
+  local archive="powershell-$version-linux-x64.tar.gz"
+  local destination="$tool_root/powershell-$version"
+  log "No APT candidate: install official PowerShell $version archive"
+  download "https://github.com/PowerShell/PowerShell/releases/download/v$version/$archive" "$temporary_dir/$archive"
+  (cd "$temporary_dir"; printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check -)
+  mkdir -p "$destination"
+  tar -xzf "$temporary_dir/$archive" -C "$destination" --no-same-owner
+  chmod +x "$destination/pwsh"
+  # Verify the binary before activating the user-local command.
+  # shellcheck disable=SC2016
+  "$destination/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+  [[ ! -e "$tool_root/powershell" || -L "$tool_root/powershell" ]] || fail 'PowerShell activation path is not an installer symlink.'
+  ln -sfn "powershell-$version" "$tool_root/powershell"
+  hash -r
+}
+
+log 'Ensure PowerShell 7+'
+# shellcheck disable=SC2016
+if command -v pwsh >/dev/null && pwsh -NoLogo -NoProfile -Command 'if ($PSVersionTable.PSVersion.Major -lt 7) { exit 1 }'; then
+  printf 'Existing PowerShell 7+ works; keeping it.\n'
+else
+  download "https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb" "$temporary_dir/microsoft-prod.deb"
+  sudo dpkg -i "$temporary_dir/microsoft-prod.deb"
+  sudo apt-get update
+  candidate=$(LC_ALL=C apt-cache policy powershell | awk '/Candidate:/ { print $2; exit }')
+  if [[ -n "$candidate" && "$candidate" != '(none)' ]]; then
+    sudo apt-get install -y powershell
+  else
+    install_powershell_archive
+  fi
+fi
 
 log 'Install Azure CLI from Microsoft packages'
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -185,7 +215,7 @@ mkdir -p "$(dirname "$environment_file")"
   printf 'export DOTNET_ROOT=%q\n' "$tool_root/dotnet"
   # Expand PATH when the generated file is sourced, not while it is written.
   # shellcheck disable=SC2016
-  printf 'export PATH=%q:%q:$PATH\n' "$tool_root/node/bin" "$tool_root/dotnet"
+  printf 'export PATH=%q:%q:%q:$PATH\n' "$tool_root/powershell" "$tool_root/node/bin" "$tool_root/dotnet"
   printf 'export DOTNET_CLI_TELEMETRY_OPTOUT=1\n'
 } > "$environment_file"
 
