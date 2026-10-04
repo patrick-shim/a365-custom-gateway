@@ -43,6 +43,8 @@ The bundled Compose configuration is for local development: loopback ports, deve
 
 Use Windows for the complete certificate-based Purview setup. Install PowerShell 7, .NET 10 SDK, Git, Azure CLI, and Docker with Linux containers. Node.js/npm are needed for local frontend development; application image builds install their frontend dependencies inside Docker. Bootstrap checks additional Microsoft management dependencies and sign-in requirements.
 
+For Linux development prerequisites, use the [Ubuntu dependency installer](tools/scripts/setup/README.md). It supports Ubuntu 22.04/24.04/26.04 x86-64, installs the required tools, and verifies them. This does not remove the current Windows requirement for Purview management.
+
 From the repository root:
 
 ```powershell

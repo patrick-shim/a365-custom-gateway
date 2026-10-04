@@ -5,6 +5,7 @@ the repository root. They retain their existing authentication and safety checks
 
 | Directory | Purpose |
 | --- | --- |
+| `setup/install-linux-dependencies.sh` | Installs and verifies development tools on Ubuntu 22.04/24.04/26.04 x86-64; see [Linux setup](setup/README.md). |
 | `diagnostics/Get-PurviewSensitiveInformationTypes.ps1` | Read-only, interactive Purview classifier discovery; never creates classifiers. |
 | `diagnostics/PurviewDiagnostics.psm1` | Connection and inventory helpers owned by the classifier-discovery diagnostic. |
 | `diagnostics/Test-GatewayAgentDlp.ps1` | Live normal/synthetic-sensitive gateway probe using an explicitly supplied test-agent key file. |
