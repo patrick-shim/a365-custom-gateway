@@ -1589,72 +1589,13 @@ internal sealed class ProvisioningMessageHandler
             new(false, new Agent365ProvisioningState(), errorSummary, errorCode);
     }
 
-    private async Task<MessageHandlingResult> HandleDeleteAsync(
-        string payload,
-        CancellationToken ct)
+    private Task<MessageHandlingResult> HandleDeleteAsync(string payload, CancellationToken ct)
     {
-        DeleteAgentMessage? message;
-        try
-        {
-            message = JsonSerializer.Deserialize<DeleteAgentMessage>(payload);
-        }
-        catch (JsonException)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "DELETE_INVALID_MESSAGE",
-                "The deletion payload is not valid JSON.");
-        }
-
-        if (message is null ||
-            message.AgentRegistrationId == Guid.Empty ||
-            message.JobId == Guid.Empty)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "DELETE_INVALID_MESSAGE",
-                "The deletion payload is missing required identifiers.");
-        }
-
-        var agent = await _agentRepository.GetByIdAsync(message.AgentRegistrationId, ct);
-        var job = await _jobRepository.GetByIdAsync(message.JobId, ct);
-        if (agent is null || job is null ||
-            job.AgentRegistrationId != message.AgentRegistrationId ||
-            job.Type != OperationType.DeleteAgent)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "DELETE_JOB_MISMATCH",
-                "The deletion job could not be correlated safely.");
-        }
-
-        if (job.Status == JobStatus.Completed && agent.Status == AgentStatus.Deleted)
-            return MessageHandlingResult.Complete();
-
-        job.Status = JobStatus.Running;
-        agent.Status = AgentStatus.Deleting;
-        await _unitOfWork.SaveChangesAsync(ct);
-
-        job.Status = JobStatus.Completed;
-        job.PercentComplete = 100;
-        job.ErrorCode = null;
-        job.ErrorSummary = null;
-        job.CompletedAtUtc = DateTime.UtcNow;
-        agent.Status = AgentStatus.Deleted;
-        agent.IsDeleted = true;
-        agent.DeletedAtUtc = DateTime.UtcNow;
-
-        await _auditEventRepository.AddAsync(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "GatewayRegistrationDeletedResourcesPreserved",
-            Details = JsonSerializer.Serialize(new { Scope = "GatewayRegistrationOnly" }),
-            CorrelationId = message.CorrelationId,
-            OccurredAtUtc = DateTime.UtcNow
-        }, ct);
-
-        await _unitOfWork.SaveChangesAsync(ct);
-        return MessageHandlingResult.Complete();
+        // A queue message cannot carry the signed-in administrator's Graph token.
+        // Retired local-only messages must never report successful deregistration.
+        return Task.FromResult(MessageHandlingResult.DeadLetter(
+            "DELETE_REQUIRES_ADMINISTRATOR", "Confirm deletion in Settings to verify Agent 365 removal."));
     }
-
     private sealed record ExportInteractionMessage(
         Guid AgentId,
         Guid RecordId,

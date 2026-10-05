@@ -8,7 +8,7 @@ const groups = [
   { label: "Workspace", items: [{ to: "/", label: "Home", icon: <Home24Regular />, end: true }] },
   { label: "Agents", items: [{ to: "/agents", label: "Agents", icon: <Bot24Regular /> }, { to: "/register", label: "Register agent", icon: <Flow24Regular /> }] },
   { label: "Data protection", items: [{ to: "/data-protection/policies", label: "Policies", icon: <ShieldTask24Regular /> }] },
-  { label: "Settings", items: [{ to: "/settings", label: "Gateway settings", icon: <Settings24Regular />, end: true }, { to: "/settings/purview", label: "Purview connection", icon: <PlugConnected24Regular /> }] },
+  { label: "Settings", items: [{ to: "/settings", label: "Gateway settings", icon: <Settings24Regular />, end: true }, { to: "/settings/purview", label: "Purview connection", icon: <PlugConnected24Regular /> }, { to: "/settings/agents", label: "Manage Agents", icon: <Bot24Regular /> }] },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

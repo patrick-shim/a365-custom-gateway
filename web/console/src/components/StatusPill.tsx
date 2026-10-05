@@ -4,6 +4,10 @@ type Tone = "success" | "warning" | "danger" | "informative" | "subtle";
 
 const toneByValue: Record<string, Tone> = {
   Healthy: "success",
+  Succeeded: "success",
+  Blocked: "danger",
+  Unconfirmed: "warning",
+  Skipped: "subtle",
   Active: "success",
   Connected: "success",
   Installed: "success",
@@ -32,7 +36,7 @@ const toneByValue: Record<string, Tone> = {
   RequiresManualIntervention: "warning",
   Expired: "danger",
   Off: "subtle",
-  Disabled: "subtle",
+  Disabled: "warning",
   NotConnected: "subtle",
   NotInstalled: "subtle",
   Draft: "informative",

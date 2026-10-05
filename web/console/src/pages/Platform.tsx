@@ -25,6 +25,11 @@ export function Platform() {
     <>
       <PageHeader title="Gateway settings" subtitle="Service health and registration defaults." />
       <Card style={{ marginBottom: 16 }}>
+        <Text weight="semibold">Agent lifecycle</Text>
+        <Body1>Select registered agents to permanently deregister from the gateway and Agent 365.</Body1>
+        <Link to="/settings/agents">Manage agent deletion</Link>
+      </Card>
+      <Card style={{ marginBottom: 16 }}>
         <Text weight="semibold">Purview access</Text>
         <Body1>Tenant access is a deployment setup responsibility. Use connection diagnostics to check administrative access; manage policy choices from Data protection.</Body1>
         <Link to="/settings/purview">Open connection diagnostics</Link>

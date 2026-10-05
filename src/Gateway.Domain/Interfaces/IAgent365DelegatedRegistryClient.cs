@@ -8,6 +8,9 @@ namespace Gateway.Domain.Interfaces;
 /// </summary>
 public interface IAgent365DelegatedRegistryClient
 {
+    /// <summary>Deletes only an exact identity-bound Registry record and verifies its absence.</summary>
+    Task DeleteAsync(Guid registrationId, Guid agentIdentityId, Guid blueprintId, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Registry deletion is not supported by this provider.");
     /// <summary>
     /// Sends the bounded, idempotent create request using the caller's durable
     /// planned Registry identifier and returns the created or existing identifier.

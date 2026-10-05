@@ -1,4 +1,6 @@
 import { useParams, useSearchParams, Link } from "react-router-dom";
+import { useState } from "react";
+import { AgentTestPanel } from "./AgentTestPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button } from "@fluentui/react-components";
 import { api } from "../../api/client";
@@ -11,6 +13,7 @@ import { AgentRegistrationProgress } from "./AgentRegistrationProgress";
 import { AgentDataProtection } from "./AgentDataProtection";
 
 export function AgentDetail() {
+  const [testing, setTesting] = useState(false);
   const { id = "" } = useParams();
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
@@ -44,14 +47,18 @@ export function AgentDetail() {
         <ErrorState error={agent.error} onRetry={() => void agent.refetch()} />
       ) : a && (
         <>
-          {(a.provisioning || ["Draft", "Provisioning", "AwaitingAdminApproval", "Failed", "RequiresManualIntervention"].includes(a.status)) &&
+          {a.status === "Disabled" && <Card style={{ marginBottom: 16 }}><Text weight="semibold">Disabled on this gateway</Text><Body1>New prompt, activity and AI interaction submissions are blocked. The Agent 365 registration is unchanged.</Body1><Link to="/settings/agents">Manage gateway access</Link></Card>}
+          {a.status !== "Disabled" && (a.provisioning || ["Draft", "Provisioning", "AwaitingAdminApproval", "Failed", "RequiresManualIntervention"].includes(a.status)) &&
             <AgentRegistrationProgress key={id} agent={a} />}
-          <TabList selectedValue={tab} onTabSelect={(_, data) => {
-            if (typeof data.value === "string") setParams(previous => { const next = new URLSearchParams(previous); next.set("tab", data.value as string); return next; });
-          }} style={{ marginBottom: 16, flexWrap: "wrap" }}>
-            <Tab value="protection">Prompt Shields</Tab><Tab value="data-protection">Data protection</Tab><Tab value="identity">Identity</Tab>
-            <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>
-          </TabList>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+            <TabList selectedValue={tab} onTabSelect={(_, data) => {
+              if (typeof data.value === "string") setParams(previous => { const next = new URLSearchParams(previous); next.set("tab", data.value as string); return next; });
+            }} style={{ flexWrap: "wrap" }}>
+              <Tab value="protection">Prompt Shields</Tab><Tab value="data-protection">Data protection</Tab><Tab value="identity">Identity</Tab>
+              <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>
+            </TabList>
+            <Button disabled={a.status !== "Active"} onClick={() => setTesting(true)}>Test Agent</Button>
+          </div>
           {tab === "protection" && <Card style={{ gap: 16, padding: 24 }}>
             <Text weight="semibold">Prompt Shields</Text>
             <Caption1>Screens prompts sent to the Gateway before your external model runs.</Caption1>
@@ -89,6 +96,7 @@ export function AgentDetail() {
           </Card>}
         </>
       )}
+      {testing && a && <AgentTestPanel key={id} agent={a} onClose={() => setTesting(false)} />}
     </>
   );
 }

@@ -1,93 +1,85 @@
 using System.Text.Json;
 using Gateway.Application.Exceptions;
-using Gateway.Contracts.Messages;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.Models;
 using MediatR;
 
 namespace Gateway.Application.Agents.Commands;
 
-internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, DeleteAgentResponse>
+internal sealed class DeleteAgentHandler(
+    IAgentRepository agents,
+    IProvisioningJobRepository jobs,
+    IAuditEventRepository audit,
+    IUnitOfWork unitOfWork,
+    IAgent365DelegatedRegistryClient registry) : IRequestHandler<DeleteAgentCommand, DeleteAgentResponse>
 {
-    private readonly IAgentRepository _agentRepository;
-    private readonly IProvisioningJobRepository _provisioningJobRepository;
-    private readonly IOutboxRepository _outboxRepository;
-    private readonly IAuditEventRepository _auditEventRepository;
-    private readonly IUnitOfWork _unitOfWork;
-
-    public DeleteAgentHandler(
-        IAgentRepository agentRepository,
-        IProvisioningJobRepository provisioningJobRepository,
-        IOutboxRepository outboxRepository,
-        IAuditEventRepository auditEventRepository,
-        IUnitOfWork unitOfWork)
-    {
-        _agentRepository = agentRepository;
-        _provisioningJobRepository = provisioningJobRepository;
-        _outboxRepository = outboxRepository;
-        _auditEventRepository = auditEventRepository;
-        _unitOfWork = unitOfWork;
-    }
-
     public async Task<DeleteAgentResponse> Handle(DeleteAgentCommand request, CancellationToken cancellationToken)
     {
-        var agent = await _agentRepository.GetByIdAsync(request.AgentId, cancellationToken)
+        var agent = await agents.GetByIdAsync(request.AgentId, cancellationToken)
             ?? throw new NotFoundException("AgentRegistration", request.AgentId);
-
-        if (agent.Status is AgentStatus.Deleting or AgentStatus.Deleted)
-            throw new InvalidStateTransitionException(agent.Status.ToString(), "Delete");
-
+        if (string.IsNullOrWhiteSpace(request.ExpectedRowVersion) ||
+            Convert.ToBase64String(agent.RowVersion) != request.ExpectedRowVersion)
+            throw new ConflictException("The agent changed after review. Refresh and confirm deletion again.");
+        if (agent.Status is not (AgentStatus.Active or AgentStatus.Disabled or AgentStatus.Deleting))
+            throw new InvalidStateTransitionException(agent.Status.ToString(), "Delete registered agent");
+        if (!Guid.TryParse(agent.Agent365InstanceId, out var registrationId) || registrationId == Guid.Empty ||
+            !Guid.TryParse(agent.AgentIdentityObjectId, out var identityId) || identityId == Guid.Empty ||
+            !Guid.TryParse(agent.BlueprintId, out var blueprintId) || blueprintId == Guid.Empty)
+            throw new ConflictException("This agent has no verified Agent 365 registration mapping. Complete or reconcile registration first.");
+        var history = await jobs.GetByAgentIdAsync(agent.Id, cancellationToken);
+        if (history.Any(job => job.Type != OperationType.DeleteAgent && job.Status is JobStatus.Pending or JobStatus.Running))
+            throw new ConflictException("Wait for the agent's current operation to finish before deleting it.");
+        var operation = history.Where(job => job.Type == OperationType.DeleteAgent)
+            .OrderByDescending(job => job.CreatedAtUtc).FirstOrDefault();
+        if (operation is null)
+        {
+            operation = new ProvisioningJob { Id = Guid.NewGuid(), AgentRegistrationId = agent.Id,
+                Type = OperationType.DeleteAgent, CreatedAtUtc = DateTime.UtcNow, StartedAtUtc = DateTime.UtcNow };
+            await jobs.AddAsync(operation, cancellationToken);
+        }
+        // Commit the runtime denial and concurrency token before any external mutation.
         agent.Status = AgentStatus.Deleting;
         agent.ProtectionRevision = Guid.NewGuid();
         agent.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedByObjectId = request.CallerObjectId;
-
-        var job = new ProvisioningJob
+        operation.Status = JobStatus.Running;
+        operation.ErrorCode = null;
+        operation.ErrorSummary = null;
+        operation.PercentComplete = 10;
+        await audit.AddAsync(new AuditEvent { Id = Guid.NewGuid(), AgentRegistrationId = agent.Id,
+            EventType = "AgentDeregistrationConfirmed", PerformedByObjectId = request.CallerObjectId,
+            OccurredAtUtc = DateTime.UtcNow }, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        try
         {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            Type = OperationType.DeleteAgent,
-            Status = JobStatus.Pending,
-            PercentComplete = 0,
-            StartedAtUtc = DateTime.UtcNow,
-            CreatedAtUtc = DateTime.UtcNow,
-            Steps = new List<ProvisioningJobStep>()
-        };
-
-        await _provisioningJobRepository.AddAsync(job, cancellationToken);
-
-        var outboxMessage = new OutboxMessage
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await registry.DeleteAsync(registrationId, identityId, blueprintId, timeout.Token);
+        }
+        catch (Exception exception) when (exception is Agent365DelegatedRegistryException or HttpRequestException or OperationCanceledException or JsonException)
         {
-            Id = Guid.NewGuid(),
-            MessageType = "DeleteAgent",
-            Payload = JsonSerializer.Serialize(new DeleteAgentMessage(
-                agent.Id,
-                job.Id,
-                CorrelationId: null)),
-            Status = OutboxMessageStatus.Pending,
-            RetryCount = 0,
-            CreatedAtUtc = DateTime.UtcNow
-        };
-        await _outboxRepository.AddAsync(outboxMessage, cancellationToken);
-
-        var auditEvent = new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "AgentDeletionRequested",
-            PerformedByObjectId = request.CallerObjectId,
-            OccurredAtUtc = DateTime.UtcNow
-        };
-        await _auditEventRepository.AddAsync(auditEvent, cancellationToken);
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        return new DeleteAgentResponse(
-            agent.Id,
-            agent.Status.ToString(),
-            job.Id,
-            null);
+            operation.Status = JobStatus.Failed;
+            operation.ErrorCode = "AGENT_DEREGISTRATION_UNCONFIRMED";
+            operation.ErrorSummary = exception is Agent365DelegatedRegistryException known
+                ? known.SafeSummary : "Microsoft deletion could not be confirmed. Retry to reconcile this agent.";
+            using var persistence = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await unitOfWork.SaveChangesAsync(persistence.Token);
+            throw new DomainException(operation.ErrorSummary, "AGENT365_DEPENDENCY_UNAVAILABLE");
+        }
+        agent.Status = AgentStatus.Deleted;
+        agent.IsDeleted = true;
+        agent.DeletedAtUtc = DateTime.UtcNow;
+        operation.Status = JobStatus.Completed;
+        operation.PercentComplete = 100;
+        operation.CompletedAtUtc = DateTime.UtcNow;
+        await audit.AddAsync(new AuditEvent { Id = Guid.NewGuid(), AgentRegistrationId = agent.Id,
+            EventType = "AgentDeregistered", PerformedByObjectId = request.CallerObjectId,
+            Details = JsonSerializer.Serialize(new { RegistryId = registrationId, RegistryAbsenceVerified = true }),
+            OccurredAtUtc = DateTime.UtcNow }, CancellationToken.None);
+        using var commit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await unitOfWork.SaveChangesAsync(commit.Token);
+        return new DeleteAgentResponse(agent.Id, "Deleted", operation.Id, null);
     }
 }

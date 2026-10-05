@@ -5,4 +5,5 @@ namespace Gateway.Application.Agents.Commands;
 
 public record DeleteAgentCommand(
     Guid AgentId,
-    string CallerObjectId) : IRequest<DeleteAgentResponse>;
+    string CallerObjectId,
+    string ExpectedRowVersion = "") : IRequest<DeleteAgentResponse>;

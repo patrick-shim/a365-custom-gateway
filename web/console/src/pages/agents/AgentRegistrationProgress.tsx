@@ -96,8 +96,8 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
       return api.getRegistrationOperation(operationId, agentId);
     },
     enabled: !!operationId,
-    refetchInterval: query => query.state.error || agent.status === "Active" ? false :
-      query.state.data?.pollingRecommended ? 3000 :
+    refetchInterval: query => query.state.error || ["Completed", "Failed", "RequiresManualIntervention", "Cancelled"].includes(query.state.data?.status ?? "") ? false :
+      agent.status === "Active" || query.state.data?.pollingRecommended ? 3000 :
         query.state.data?.status === "AwaitingAdministratorAction" ? 10000 : false,
   });
   const [confirming, setConfirming] = useState<string>();
@@ -111,6 +111,10 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
   const [attempt, setAttempt] = useState<{ operationId: string; submitted: boolean; uncertain: boolean; error?: unknown }>();
   const current = operation.isSuccess ? operation.data : undefined;
   const active = agent.status === "Active";
+  const syncingCompletion = active && !!current && ["Pending", "Running", "AwaitingAdministratorAction"].includes(current.status) && !operation.error;
+  useEffect(() => {
+    if (active && operationId) void qc.invalidateQueries({ queryKey: ["registration-operation", operationId, agentId] });
+  }, [active, operationId, agentId, qc]);
   const currentAttempt = attempt?.operationId === operationId ? attempt : undefined;
   const error = active ? undefined : currentAttempt?.error;
   const readError = operationId ? operation.error : history.error;
@@ -222,6 +226,7 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
           ? "Waiting for the provisioning worker. Progress changes only when the Gateway reports it."
           : stage?.description ?? "The Gateway is preparing this agent. Progress is read from the server."}</Body1>}
         {active && <Body1>The agent record confirms it is Active. No registration confirmation is needed.</Body1>}
+        {syncingCompletion && <Body1>{!reducedMotion && <Spinner size="tiny" />} Refreshing the final setup result automatically…</Body1>}
         {!active && !settingUp && !blocked && <Body1>The setup history does not change this agent's current state. No registration action is available.</Body1>}
         {settingUp && !blocked && current?.status === "Completed" && <Body1>
           The operation completed, but the agent is not Active yet. Checking the agent record; setup is not confirmed.
@@ -265,7 +270,7 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
         : "The API has not advertised a supported registration action for this paused operation."}{" "}
       No confirmation is available. Refresh setup status and review API compatibility on Platform using the operation reference.
     </MessageBarBody></MessageBar>}
-    {!active && failed && <MessageBar intent="error" role="alert"><MessageBarBody>
+    {failed && <MessageBar intent="error" role="alert"><MessageBarBody>
       <Text weight="semibold">Agent setup needs attention. </Text>
       {current?.error?.message ?? agent.provisioning?.lastError ?? "The Gateway reported a failure without a diagnostic message. Use the support reference below to investigate."}
       <Caption1 block>Stage: {setupStageName(current?.currentStep ?? agent.provisioning?.currentStep)}</Caption1>

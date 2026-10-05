@@ -1,4 +1,6 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { AgentTestPanel } from "./AgentTestPanel";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Table, TableHeader, TableRow, TableHeaderCell, TableBody, TableCell,
@@ -11,6 +13,7 @@ import { StatusPill } from "../../components/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
 
 export function AgentsList() {
+  const [testing, setTesting] = useState<{agentId:string;name:string;externalAgentId:string;status:string}|null>(null);
   const navigate = useNavigate();
   const agents = useInfiniteQuery({
     queryKey: ["agents"],
@@ -34,7 +37,7 @@ export function AgentsList() {
               <TableHeader><TableRow>
                 <TableHeaderCell>Agent</TableHeaderCell><TableHeaderCell>Blueprint</TableHeaderCell>
                 <TableHeaderCell>Status</TableHeaderCell><TableHeaderCell>Prompt Shields</TableHeaderCell>
-                <TableHeaderCell>Last activity</TableHeaderCell>
+                <TableHeaderCell>Test Agent</TableHeaderCell><TableHeaderCell>Last activity</TableHeaderCell>
               </TableRow></TableHeader>
               <TableBody>{items.map(agent => (
                 <TableRow key={agent.agentId}>
@@ -50,6 +53,7 @@ export function AgentsList() {
                     </Text>}
                   </TableCell>
                   <TableCell><StatusPill value={shieldLabel(agent)} /></TableCell>
+                  <TableCell><Button disabled={agent.status !== "Active"} onClick={() => setTesting(agent)} aria-label={`Test Agent: ${agent.name}`}>Test Agent</Button></TableCell>
                   <TableCell>{formatTime(agent.lastActivityAtUtc)}</TableCell>
                 </TableRow>
               ))}</TableBody>
@@ -59,6 +63,7 @@ export function AgentsList() {
             onClick={() => void agents.fetchNextPage()}>{agents.isFetchingNextPage ? "Loading..." : "Load more agents"}</Button>}
         </>
       )}
+      {testing && <AgentTestPanel key={testing.agentId} agent={testing} onClose={() => setTesting(null)} />}
     </>
   );
 }

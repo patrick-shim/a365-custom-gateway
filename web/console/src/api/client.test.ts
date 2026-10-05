@@ -13,6 +13,15 @@ let server: ReturnType<typeof mockServer>;
 beforeEach(() => { server = mockServer(); });
 
 describe("Gateway wire contracts", () => {
+  it("changes only gateway admission and rejects mismatched state responses", async () => {
+    server.handlers.set(`POST /api/v1/agents/${agentId}:disable`, () => ({ agentId, status: "Disabled", effectiveAtUtc: new Date().toISOString() }));
+    expect((await api.setAgentEnabled(agentId, false)).status).toBe("Disabled");
+    server.handlers.set(`POST /api/v1/agents/${agentId}:enable`, () => ({ agentId, status: "Active", effectiveAtUtc: new Date().toISOString() }));
+    expect((await api.setAgentEnabled(agentId, true)).status).toBe("Active");
+    server.handlers.set(`POST /api/v1/agents/${agentId}:disable`, () => ({ agentId: operationId, status: "Disabled", effectiveAtUtc: new Date().toISOString() }));
+    await expect(api.setAgentEnabled(agentId, false)).rejects.toMatchObject({ code: "INVALID_API_RESPONSE", outcomeUnknown: true });
+    expect(server.requests).toHaveLength(3);
+  });
   it("rejects a different or unknown assignment confirmation without repeating the mutation", async () => {
     const path = `POST /api/v1/agents/${agentId}/purview-policies/${operationId}/confirm`;
     server.handlers.set(path, () => ({ operationId: agentId, status: "Assigned" }));

@@ -423,13 +423,16 @@ function Get-UniqueGraphPermissionId {
 }
 
 function Test-GatewayApiPasswordCredentialBoundary {
-    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Credentials)
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Credentials,
+        [ValidateNotNullOrEmpty()][string]$ExpectedCredentialName = 'a365gw-bootstrap-runtime-api-obo'
+    )
     if ($Credentials.Count -eq 0) { return $true }
     if ($Credentials.Count -ne 1) { return $false }
     $credential = $Credentials[0]
     $expiry = [DateTimeOffset]::MinValue
     $keyId = [guid]::Empty
-    return [string]$credential.displayName -ceq 'a365gw-bootstrap-runtime-api-obo' -and
+    return [string]$credential.displayName -ceq $ExpectedCredentialName -and
         [guid]::TryParse([string]$credential.keyId, [ref]$keyId) -and $keyId -ne [guid]::Empty -and
         [DateTimeOffset]::TryParse([string]$credential.endDateTime, [ref]$expiry) -and $expiry -gt [DateTimeOffset]::UtcNow
 }
@@ -437,6 +440,7 @@ function Test-GatewayApiPasswordCredentialBoundary {
 function Assert-GatewayApiDelegatedPermissionBoundary {
     param(
         [Parameter(Mandatory)]$Identity,
+        [ValidateNotNullOrEmpty()][string]$ExpectedCredentialName = 'a365gw-bootstrap-runtime-api-obo',
         [switch]$RequireComplete
     )
 
@@ -449,7 +453,7 @@ function Assert-GatewayApiDelegatedPermissionBoundary {
     )
     Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Gateway API application' | Out-Null
     if ([string]$application.appId -ne [string]$Identity.gatewayApiClientId -or
-        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials)) -or
+        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials) -ExpectedCredentialName $ExpectedCredentialName) -or
         @($application.keyCredentials).Count -ne 0 -or
         @($application.web.redirectUris).Count -ne 0 -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
@@ -497,13 +501,17 @@ function Assert-GatewayApiDelegatedPermissionBoundary {
 }
 
 function Ensure-GatewayApiDelegatedRegistryConsent {
-    param([Parameter(Mandatory)]$Identity, [switch]$ReconcileOnly)
+    param(
+        [Parameter(Mandatory)]$Identity,
+        [ValidateNotNullOrEmpty()][string]$ExpectedCredentialName = 'a365gw-bootstrap-runtime-api-obo',
+        [switch]$ReconcileOnly
+    )
 
     # Call only after application/principal ownership has been verified.
     # Reject broader or ambiguous grants before making any tenant change.
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity | Out-Null
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -ExpectedCredentialName $ExpectedCredentialName | Out-Null
     if ($ReconcileOnly) {
-        Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
+        Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -ExpectedCredentialName $ExpectedCredentialName -RequireComplete | Out-Null
         return
     }
     $graph = (Get-GraphPermissionCatalog).servicePrincipal
@@ -516,7 +524,7 @@ function Ensure-GatewayApiDelegatedRegistryConsent {
     } | Out-Null
     $grantUrl = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($Identity.gatewayApiServicePrincipalId)'&`$select=id,clientId,resourceId,consentType,scope"
     $grants = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity | Out-Null
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -ExpectedCredentialName $ExpectedCredentialName | Out-Null
     if ($grants.Count -eq 0) {
         Invoke-GraphJsonBody -Method POST -Url 'https://graph.microsoft.com/v1.0/oauth2PermissionGrants' -Body @{
             clientId = [string]$Identity.gatewayApiServicePrincipalId
@@ -532,7 +540,7 @@ function Ensure-GatewayApiDelegatedRegistryConsent {
             } | Out-Null
         }
     } else { throw 'Gateway API delegated consent changed during setup; review its exact permission boundary.' }
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -ExpectedCredentialName $ExpectedCredentialName -RequireComplete | Out-Null
 }
 
 function Assert-GraphApplicationRoleAssignmentBoundary {
@@ -648,6 +656,7 @@ function Ensure-GatewayApiApplication {
     # than one Gateway, so bind both to the configured project discriminator.
     $displayName = "A365 Gateway API - $($Config.projectName)-$($Config.environment)"
     $audience = "api://a365-gateway-$($Config.projectName)-$($Config.environment)"
+    $expectedCredentialName = Get-RuntimeCredentialName -Config $Config -Purpose 'api-obo'
     $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
     if (-not $application) {
         $audienceMatches = @(Get-ApplicationsByExactIdentifierUri -IdentifierUri $audience)
@@ -688,7 +697,7 @@ function Ensure-GatewayApiApplication {
         [string]$application.signInAudience -cne 'AzureADMyOrg' -or
         @($application.identifierUris).Count -ne 1 -or
         [string]$application.identifierUris[0] -cne $audience -or
-        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials)) -or
+        -not (Test-GatewayApiPasswordCredentialBoundary -Credentials @($application.passwordCredentials) -ExpectedCredentialName $expectedCredentialName) -or
         @($application.keyCredentials).Count -ne 0 -or
         @($application.web.redirectUris).Count -ne 0 -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
@@ -743,7 +752,7 @@ function Ensure-GatewayApiApplication {
         gatewayApiClientId = [string]$application.appId
         gatewayApiServicePrincipalId = $gatewayApiServicePrincipalId
     }
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $gatewayApiIdentityBoundary | Out-Null
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $gatewayApiIdentityBoundary -ExpectedCredentialName $expectedCredentialName | Out-Null
     $userAssignments = @($principalBoundary.appRoleAssignedTo)
     if ($userAssignments.Count -eq 0) {
         if ($ReconcileOnly) { throw 'Gateway Administrator assignment was not observable during read-only reconciliation.' }
@@ -769,10 +778,10 @@ function Ensure-GatewayApiApplication {
     if (-not $principal) { throw 'Gateway API service principal disappeared during final exact readback.' }
     $principalBoundaryArguments.ServicePrincipal = $principal
     Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments | Out-Null
-    Assert-GatewayApiDelegatedPermissionBoundary -Identity $gatewayApiIdentityBoundary | Out-Null
+    Assert-GatewayApiDelegatedPermissionBoundary -Identity $gatewayApiIdentityBoundary -ExpectedCredentialName $expectedCredentialName | Out-Null
     if ($Config.environment -eq 'dev' -and
         $Config.agent365.allowDevelopmentRegistryPreview -and $Config.agent365.registryBetaAcknowledged) {
-        Ensure-GatewayApiDelegatedRegistryConsent -Identity $gatewayApiIdentityBoundary -ReconcileOnly:$ReconcileOnly
+        Ensure-GatewayApiDelegatedRegistryConsent -Identity $gatewayApiIdentityBoundary -ExpectedCredentialName $expectedCredentialName -ReconcileOnly:$ReconcileOnly
     }
     return [ordered]@{
         gatewayApiApplicationObjectId = [string]$application.id

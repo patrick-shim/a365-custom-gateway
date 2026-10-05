@@ -1,0 +1,23 @@
+import { expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { FluentProvider, webLightTheme } from "@fluentui/react-components";
+import { AgentTestPanel } from "./AgentTestPanel";
+import { simulateAgent } from "../../api/simulator";
+vi.mock("../../auth/msal",()=>({getAccount:()=>({idTokenClaims:{oid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}})}));
+vi.mock("../../api/simulator",()=>({simulateAgent:vi.fn(async()=>({runId:"test-run",outcome:"Succeeded",steps:[]}))}));
+it("uses the fixed selected agent, clears the key, and reports acceptance without claiming portal delivery",async()=>{
+ const close=vi.fn();const user=userEvent.setup();
+ render(<FluentProvider theme={webLightTheme}><AgentTestPanel agent={{agentId:"agent",name:"Support",externalAgentId:"support",status:"Active"}} onClose={close}/></FluentProvider>);
+ expect(screen.getByLabelText("External agent ID")).toHaveValue("support");
+ expect(screen.getByRole("button",{name:"Send test prompt"})).toBeDisabled();
+ await user.type(screen.getByLabelText("Registered API key"),"temporary-key");
+ await user.type(screen.getByLabelText("Test prompt"),"Hello");
+ await user.click(screen.getByRole("button",{name:"Send test prompt"}));
+ await screen.findByText("Succeeded — gateway accepted the test");
+ expect(screen.getByLabelText("Registered API key")).toHaveValue("");
+ expect(simulateAgent).toHaveBeenCalledWith(expect.objectContaining({externalAgentId:"support",apiKey:"temporary-key",prompt:"Hello"}),expect.any(AbortSignal),expect.any(Function));
+ expect(localStorage.getItem("temporary-key")).toBeNull();
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Close agent test"})).toBeEnabled());
+ await user.click(screen.getByRole("button",{name:"Close agent test"}));expect(close).toHaveBeenCalled();
+});

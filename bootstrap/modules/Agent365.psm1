@@ -297,9 +297,10 @@ function Assert-Agent365SeedBlueprintSurface {
     $passwordCredentials = @(Get-Agent365RequiredProperty -InputObject $Blueprint -Name 'passwordCredentials' -Label 'Agent ID blueprint')
     if ($passwordCredentials.Count -ne 0) {
         # Runtime Compose may attach exactly one bootstrap blueprint secret for local FMI.
-        # Azure pristine/runtime surfaces must remain secret-free.
+        # Pristine authority surfaces must remain secret-free.
+        $expectedCredentialName = Get-RuntimeCredentialName -Config $Config -Purpose 'blueprint'
         $runtimeSecrets = @($passwordCredentials | Where-Object {
-            [string]$_.displayName -ceq 'a365gw-bootstrap-runtime-blueprint'
+            [string]$_.displayName -ceq $expectedCredentialName
         })
         $runtimeAllowed = -not [string]::IsNullOrWhiteSpace($GatewayWorkloadPrincipalId) -and
             -not $RequirePristineAuthoritySurface -and

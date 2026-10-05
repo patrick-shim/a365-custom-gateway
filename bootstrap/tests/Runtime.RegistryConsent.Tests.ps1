@@ -41,6 +41,16 @@ Import-Module "$PSScriptRoot/../modules/Entra.psm1" -Force -DisableNameChecking
     if ($script:writes) { throw 'Read-only reconciliation mutated tenant.' }
     Ensure-GatewayApiDelegatedRegistryConsent -Identity $identity
     Assert-GatewayApiDelegatedPermissionBoundary -Identity $identity -RequireComplete | Out-Null
+    $script:application.passwordCredentials=@(@{
+        displayName='installation-specific-api-obo'; keyId=[guid]::NewGuid().ToString('D')
+        endDateTime=[DateTimeOffset]::UtcNow.AddDays(1).ToString('O')
+    })
+    $before=$script:writes
+    Ensure-GatewayApiDelegatedRegistryConsent -Identity $identity -ExpectedCredentialName 'installation-specific-api-obo' -ReconcileOnly
+    if ($script:writes -ne $before) { throw 'Configured credential reconciliation mutated tenant.' }
+    Ensure-GatewayApiDelegatedRegistryConsent -Identity $identity -ExpectedCredentialName 'installation-specific-api-obo'
+    ExpectFailure { Ensure-GatewayApiDelegatedRegistryConsent -Identity $identity } 'An unconfigured credential label was accepted.'
+    $script:application.passwordCredentials=@()
     Ensure-GatewayApiDelegatedRegistryConsent -Identity $identity
     if ($script:grantCreates -ne 1) { throw 'Repeated setup created duplicate consent.' }
     $script:grants[0].scope='AgentRegistration.Read.All'

@@ -94,6 +94,18 @@ function mutationHeaders(expectedRowVersion: string, idempotencyKey: string): He
 const assignmentReviewSchema = z.object({ operationId: z.string().uuid(), agentId: z.string().uuid(), agentIdentityId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), expiresAtUtc: z.string(), effect: z.string() });
 const assignmentListSchema = z.object({ agentId: z.string().uuid(), agentIdentityId: z.string().nullable(), bindingCurrent: z.boolean(), allowObservedAtUtc: z.string().nullable(), blockObservedAtUtc: z.string().nullable(), items: z.array(z.object({ operationId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), status: z.enum(["Pending", "Assigned", "Failed"]), failureCode: z.string().nullable(), confirmedAtUtc: z.string().datetime({ offset: true }).nullable().optional(), expiresAtUtc: z.string().datetime({ offset: true }).optional(), assignedAtUtc: z.string().nullable() })) });
 export const api = {
+  async setAgentEnabled(agentId: string, enabled: boolean) {
+    const result = await json(z.object({ agentId: z.string().uuid(), status: z.literal(enabled ? "Active" : "Disabled"), effectiveAtUtc: z.string() }),
+      `/api/v1/agents/${encodeURIComponent(agentId)}:${enabled ? "enable" : "disable"}`, "POST", {});
+    if (result.agentId !== agentId) throw new ApiError("The response did not match the selected agent. Refresh its status.", 502, "INVALID_API_RESPONSE", undefined, true);
+    return result;
+  },
+  async deleteRegisteredAgent(agentId: string, expectedRowVersion: string) {
+    const result = await json(z.object({ agentId: z.string().uuid(), status: z.literal("Deleted"), operationId: z.string().uuid() }),
+      `/api/v1/agents/${encodeURIComponent(agentId)}`, "DELETE", { expectedRowVersion, confirmPermanentDeletion: true });
+    if (result.agentId !== agentId) throw new ApiError("Deletion response did not match the selected agent. Refresh its status.", 502, "INVALID_API_RESPONSE", undefined, true);
+    return result;
+  },
   async listAgentPolicies(agentId: string) {
     const value = await json(assignmentListSchema, `/api/v1/agents/${encodeURIComponent(agentId)}/purview-policies`);
     if (value.agentId !== agentId) throw new ApiError("Agent assignment response mismatch.", 502, "INVALID_API_RESPONSE");

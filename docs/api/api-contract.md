@@ -50,7 +50,7 @@ blueprint. Purview policy selection is performed after registration.
 | `GET /api/v1/agents` | Search and paginate registrations |
 | `GET /api/v1/agents/{id}` | Read registration and protection state |
 | `PATCH /api/v1/agents/{id}/features` | Update supported feature choices |
-| `POST /api/v1/agents/{id}:enable` or `:disable` | Change lifecycle state |
+| `POST /api/v1/agents/{id}:enable` or `:disable` | Restore or block gateway admission only; Agent 365 registration is unchanged |
 | `DELETE /api/v1/agents/{id}` | Request agent deletion |
 | `POST /api/v1/agents/{id}:retry-provisioning` | Retry eligible provisioning |
 | `GET /api/v1/agents/{id}/credentials` | List credential metadata |
@@ -118,3 +118,27 @@ evaluations. An unavailable required protection service is not an allowed verdic
 
 `GET /health` and `GET /health/ready` expose service health/readiness. Deployment
 readiness alone does not establish live policy blocking or sibling isolation.
+
+### Permanently deregister registered agents
+
+**Settings → Manage Agents** also provides confirmed bulk Disable and Enable actions. Disable transitions Active to Disabled; Enable transitions Disabled to Active. Administrators or Operators may call these gateway-only endpoints. Disabled agents cannot submit new prompts, activities, activity batches or AI interactions. Protection receipts are invalidated by the state change. Agent 365 registrations, Entra identities and protection settings remain intact; already accepted work may finish processing. Each response contains `agentId`, `status` and `effectiveAtUtc`; invalid transitions return 409. The Console refreshes agent lists, detail views and dashboard summaries after each batch.
+
+For permanent deletion, select one or more registered agents, review their names and Registry IDs, and type `DELETE` to confirm. Only Gateway Administrators may delete. Each agent is processed independently, with visible progress and a separate result; a failure does not hide another agent's result.
+
+`DELETE /api/v1/agents/{id}` now requires a JSON body:
+
+```json
+{"expectedRowVersion":"<rowVersion from GET /api/v1/agents/{id}>","confirmPermanentDeletion":true}
+```
+
+The API first sets the registration to `Deleting`, denying runtime access. Using the administrator's delegated Graph permission `AgentRegistration.ReadWrite.All`, it verifies the exact Registry ID/agent identity/blueprint mapping, deletes the Registry entry, and reads back its absence. Only then does it return HTTP 200 with `status: "Deleted"` and remove the registration from the gateway's active inventory. Local tombstones and audit history remain; there is no gateway restore action. Entra identities, shared blueprints and Purview policies are retained.
+
+Only `Active`, `Disabled`, and retryable `Deleting` registrations with complete mappings are eligible. Stale review versions and active provisioning are rejected. If Microsoft fails or the outcome cannot be verified, the gateway retains the `Deleting` record. Refresh, review its latest version, and confirm again to reconcile deletion. A missing Registry entry is safe to reconcile; a mismatched or unauthorized entry is never deleted. Tokens are neither persisted nor queued. Old local-only deletion queue messages are rejected.
+
+### Test a registered agent from the Console
+
+Use **Test Agent** on the Agents list or an active agent's detail page. The side panel fixes the selected external agent ID and collects its API key and a test prompt. User context defaults to the signed-in administrator's Entra object ID. The key is kept in component memory only, cleared on submission/close, and sent as a Bearer credential exclusively to the same-origin gateway runtime endpoints. No administrator access token is substituted.
+
+The simulator calls `POST /api/v1/prompts:evaluate`, then `POST /api/v1/agent-activities`. If allowed, it also calls `POST /api/v1/ai-interactions` with the same prompt, interaction ID and evaluation receipt. The response is explicitly labeled as simulated; no model is invoked. Blocked prompts do not produce a simulated AI response. The gateway's configured Prompt Shields, Purview and observability paths execute normally, including configured blocked-prompt telemetry. Each request has its own idempotency key; uncertain requests are never automatically replayed.
+
+Results distinguish allowed, blocked, failed, partial and unconfirmed processing, with receipt/correlation IDs. HTTP acceptance or a pending export is **not** confirmation of portal visibility. Agent 365, Purview AI Explorer and Defender delivery depend on the actual agent/deployment configuration and downstream processing. No direct Defender ingestion claim is made by this UI.

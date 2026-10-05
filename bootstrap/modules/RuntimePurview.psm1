@@ -85,7 +85,7 @@ function Ensure-RuntimePurviewManagementIdentity {
         if (@($app.keyCredentials).Count -ne 0) { throw 'Entra has a certificate but this catalog host has no corresponding private key. Restore it; do not rotate implicitly.' }
         $certificate = New-SelfSignedCertificate -Subject $subject -CertStoreLocation Cert:\CurrentUser\My `
             -Provider 'Microsoft Enhanced RSA and AES Cryptographic Provider' -KeySpec KeyExchange `
-            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -KeyExportPolicy NonExruntime `
+            -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -KeyExportPolicy NonExportable `
             -NotAfter (Get-Date).AddYears(1)
     } else { $certificate = $certs[0] }
     if (-not $certificate.HasPrivateKey -or $certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow.AddDays(30)) {

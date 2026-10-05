@@ -68,6 +68,38 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         _verificationDelays = verificationDelays?.ToArray() ?? DefaultVerificationDelays;
     }
 
+    public async Task DeleteAsync(Guid registrationId, Guid agentIdentityId, Guid blueprintId, CancellationToken cancellationToken)
+    {
+        if (registrationId == Guid.Empty || agentIdentityId == Guid.Empty || blueprintId == Guid.Empty)
+            throw Failure(ErrorCodes.AGENT365_REGISTRY_REQUEST_REJECTED, "Deletion requires the exact Registry and identity mapping.", false);
+        var token = await GetTokenAsync(cancellationToken);
+        var path = $"beta/copilot/agentRegistrations/{registrationId:D}";
+        var deletionSent = false;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            using var read = CreateRequest(HttpMethod.Get, path, token, null);
+            using var response = await _httpClient.SendAsync(read, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.NotFound) return;
+            if (IsTransient(response.StatusCode)) continue;
+            if (response.StatusCode != HttpStatusCode.OK)
+                throw Failure(MapCreateFailureCode(response.StatusCode), "Microsoft did not authorize or accept Registry deletion verification.", attempt > 0);
+            var record = await response.Content.ReadFromJsonAsync<DelegatedRegistryRecord>(JsonOptions, cancellationToken);
+            if (record is null || !Guid.TryParse(record.Id, out var actualId) || actualId != registrationId ||
+                !Guid.TryParse(record.AgentIdentityId, out var actualIdentity) || actualIdentity != agentIdentityId ||
+                !Guid.TryParse(record.AgentIdentityBlueprintId, out var actualBlueprint) || actualBlueprint != blueprintId)
+                throw Failure(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT, "The Registry record does not match this agent. Nothing was deleted by this request.", false);
+            if (deletionSent) continue;
+            using var delete = CreateRequest(HttpMethod.Delete, path, token, null);
+            using var deleted = await _httpClient.SendAsync(delete, cancellationToken);
+            if (deleted.StatusCode is not (HttpStatusCode.NoContent or HttpStatusCode.NotFound))
+                throw Failure(MapCreateFailureCode(deleted.StatusCode), "Registry deletion was not confirmed. Retry to reconcile the exact record.", true);
+            deletionSent = true;
+        }
+        throw Failure(ErrorCodes.PROVISIONING_DEPENDENCY_UNAVAILABLE,
+            "Microsoft has not confirmed Registry removal yet. Retry deletion to verify it; the gateway record is retained.", true, isTransient: true);
+    }
+
     public async Task<string> CreateAsync(
         Agent365DelegatedRegistryRequest request,
         CancellationToken cancellationToken)

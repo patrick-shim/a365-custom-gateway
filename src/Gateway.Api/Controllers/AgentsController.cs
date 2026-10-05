@@ -247,16 +247,22 @@ public class AgentsController : ControllerBase
 
     [HttpDelete("{agentId:guid}")]
     [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
-    [ProducesResponseType(typeof(DeleteAgentResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(DeleteAgentResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> DeleteAgent(
         Guid agentId,
+        [FromBody] DeleteRegisteredAgentRequest request,
         CancellationToken cancellationToken = default)
     {
-        var command = new DeleteAgentCommand(agentId, User.GetObjectId());
+        if (!request.ConfirmPermanentDeletion || string.IsNullOrWhiteSpace(request.ExpectedRowVersion))
+            return BadRequest(new ProblemDetails { Title = "Review and explicitly confirm permanent deletion first." });
+        var command = new DeleteAgentCommand(agentId, User.GetObjectId(), request.ExpectedRowVersion);
         var result = await _sender.Send(command, cancellationToken);
 
-        return Accepted(result);
+        return Ok(result);
     }
 
     [HttpPost("{agentId:guid}:retry-provisioning")]

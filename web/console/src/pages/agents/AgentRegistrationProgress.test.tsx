@@ -58,6 +58,23 @@ async function refresh() {
 }
 
 describe("Authoritative, accessible agent setup", () => {
+  it.each(["Completed", "Failed"])("keeps fetching final verification after Active until %s without manual refresh", async outcome => {
+    let latest = running(6, "Pending");
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => latest);
+    const view = renderSetup({ ...approvalAgent, status: "Provisioning" });
+    await screen.findByRole("list", { name: "Setup stages" });
+    view.showAgent({ ...approvalAgent, status: "Active" });
+    await screen.findByText("Refreshing the final setup result automatically…");
+    // The agent becomes Active before the final operation write is visible.
+    latest = { ...running(6), status: outcome, pollingRecommended: false, percentComplete: outcome === "Completed" ? 100 : 85,
+      steps: running(6).steps.map((step, i) => ({ ...step, status: i === 6 ? outcome : "Completed" })) };
+    await waitFor(() => {
+      const last = within(screen.getByRole("list", { name: "Setup stages" })).getAllByRole("listitem")[6];
+      expect(last).toHaveAttribute("data-state", outcome === "Completed" ? "done" : "failed");
+    }, { timeout: 5000 });
+    expect(screen.queryByText("Refreshing the final setup result automatically…")).not.toBeInTheDocument();
+    expect(server.requests.every(request => request.method === "GET")).toBe(true);
+  });
   it.each(labels.map((label, index) => ({ label, index })))("shows prominent running progress for $label", async ({ label, index }) => {
     const operation = running(index);
     server.handlers.set(`GET /api/v1/operations/${operationId}`, () => operation);
