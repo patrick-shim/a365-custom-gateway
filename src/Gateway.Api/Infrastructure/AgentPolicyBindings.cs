@@ -30,7 +30,7 @@ public sealed class AgentPolicyBindings(GatewayDbContext db, IPurviewPolicyCatal
                     policy.AllAccountsApplicationIds?.Contains(child) != true) return null;
             }
             return new(PolicyAssignmentProtocol.Digest(selected.Select(x => new { x.Id, x.PolicyId, x.AssignedRevision, x.AgentIdentityId })),
-                snapshot.RetrievedAtUtc.AddMinutes(5).UtcDateTime);
+                snapshot.RetrievedAtUtc.Add(PurviewPolicyCatalogValidation.MaximumAge).UtcDateTime);
         }
         catch (PurviewPolicyException) { return null; }
     }

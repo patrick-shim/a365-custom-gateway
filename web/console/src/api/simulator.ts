@@ -16,7 +16,7 @@ export type TestStep = { name: string; status: "Running" | "Succeeded" | "Accept
 export type AgentTestResult = { runId:string; outcome:"Succeeded"|"Blocked"|"Failed"|"Partial"; steps:TestStep[] };
 export const simulatedResponse = "Gateway Console simulation completed. This is a test response; no language model was called.";
 
-class TestRequestError extends Error { constructor(message:string, readonly uncertain=false) { super(message); } }
+class TestRequestError extends Error { constructor(message:string, readonly uncertain=false, readonly reference?:string) { super(message); } }
 async function post(path:string, key:string, body:unknown, signal:AbortSignal) {
   let response:Response;
   const controller=new AbortController();
@@ -37,11 +37,25 @@ async function post(path:string, key:string, body:unknown, signal:AbortSignal) {
   finally {clearTimeout(timer);signal.removeEventListener("abort",abort);}
   return { response,value };
 }
-function failure(status:number):never {
+function failure(status:number, value:unknown):never {
   // Never echo an arbitrary dependency body: it could contain a key or prompt.
+  const messages:Record<string,string>={
+    AGENT_IDENTITY_MISMATCH:"This API key belongs to a different agent. Use the key issued for the selected agent.",
+    AGENT_DISABLED:"This agent is disabled in the gateway. Enable it in Manage Agents before testing.",
+    PURVIEW_ASSIGNMENT_NOT_READY:"Purview protection is not ready. Open Data protection and wait for the selected policy assignment to finish. If it has finished, check Purview connection diagnostics before retrying.",
+    PURVIEW_INVENTORY_STALE:"The synchronized Purview policy catalog is stale. Check Purview connection diagnostics and wait for a successful refresh before retrying.",
+    PURVIEW_TENANT_NOT_CONNECTED:"The gateway is not connected to the configured Purview tenant. Check Purview connection diagnostics before retrying.",
+    PURVIEW_RUNTIME_INVENTORY_EXPIRED:"The synchronized Purview policy catalog expired during the operation. Wait for a successful refresh and retry.",
+    PURVIEW_RUNTIME_CONTEXT_CHANGED:"Purview policy scope changed during the operation. Refresh the agent and retry after the current assignment is confirmed.",
+    PROMPT_EVALUATION_INVALID:"The protection settings changed or their current policy scope could not be verified. Check Data protection and Purview connection diagnostics before retrying.",
+    PROMPT_EVALUATION_UNAVAILABLE:"A protection service could not complete the check. Check Prompt Shields and Purview connection diagnostics before retrying.",
+  };
+  const problem=z.object({errorCode:z.string(),correlationId:z.string().regex(/^[a-f0-9-]{16,64}$/i).optional()}).safeParse(value);
+  if(problem.success&&Object.hasOwn(messages,problem.data.errorCode))
+    throw new TestRequestError(messages[problem.data.errorCode],false,problem.data.correlationId);
   const message=status===401 ? "API key rejected. Check that it is current and belongs to this agent."
     :status===403 ? "Access denied. Check the agent, API key and user context."
-    :status===409 ? "The agent or protection settings changed. Review its current state before starting a new test."
+    :status===409 ? "Protection is not ready. Check this agent's Data protection status and Purview connection diagnostics before retrying."
     :status===400 ? "The gateway rejected the test fields. Check the user object ID and prompt."
     :`Gateway request failed (HTTP ${status}). Check service health and the agent's settings.`;
   throw new TestRequestError(message,status>=500);
@@ -52,7 +66,7 @@ export async function simulateAgent(input:{externalAgentId:string;apiKey:string;
   const steps:TestStep[]=[];
   const publish=(step:TestStep)=>{const index=steps.findIndex(s=>s.name===step.name);if(index<0)steps.push(step);else steps[index]=step;onSteps([...steps]);};
   const failed=(name:string,e:unknown)=>publish({name,status:e instanceof TestRequestError&&e.uncertain?"Unconfirmed":"Failed",
-    detail:e instanceof TestRequestError?e.message:"Unexpected test response. Check the gateway before starting another test."});
+    detail:e instanceof TestRequestError?e.message:"Unexpected test response. Check the gateway before starting another test.",reference:e instanceof TestRequestError?e.reference:undefined});
   const common={externalAgentId:input.externalAgentId,interactionId:runId,occurredAtUtc:new Date().toISOString(),
     userContext:{tenantUserObjectId:input.userObjectId},prompt:{contentType:"text/plain",content:input.prompt}};
   let evaluation:z.infer<typeof evaluationSchema>;
@@ -63,7 +77,7 @@ export async function simulateAgent(input:{externalAgentId:string;apiKey:string;
     const parsed=evaluationSchema.safeParse(blocked?.success ? {
       ...blocked.data, allowed:false, evaluationReceiptId:null,interactionId:runId,decision:blocked.data.errorCode,userMessage:"Prompt blocked"
     } : value);
-    if(!parsed.success){if(!response.ok)failure(response.status);throw new TestRequestError("Prompt evaluation response is invalid. No simulated interaction was sent.",true);}
+    if(!parsed.success){if(!response.ok)failure(response.status,value);throw new TestRequestError("Prompt evaluation response is invalid. No simulated interaction was sent.",true);}
     evaluation=parsed.data;
     if(evaluation.interactionId!==runId || (evaluation.allowed ? response.status!==200||!evaluation.evaluationReceiptId : response.status!==403))
       throw new TestRequestError("Prompt evaluation did not match this test. No simulated interaction was sent.",true);
@@ -75,7 +89,7 @@ export async function simulateAgent(input:{externalAgentId:string;apiKey:string;
     const {response,value}=await post("/api/v1/agent-activities",input.apiKey,{
       externalAgentId:input.externalAgentId,activityId:runId,sessionId:runId,activityType:"Chat",occurredAtUtc:new Date().toISOString(),
       actor:{type:"User",tenantUserObjectId:input.userObjectId},attributes:{source:"GatewayConsoleSimulator",promptDecision:evaluation.decision}},signal);
-    if(!response.ok)failure(response.status);
+    if(!response.ok)failure(response.status,value);
     const receipt=activitySchema.parse(value);
     if(response.status!==202||receipt.activityId!==runId)throw new TestRequestError("Activity receipt did not match this test.",true);
     publish({name:"Activity telemetry",status:"Accepted",detail:`Accepted by gateway (${receipt.status}). Downstream delivery is not yet confirmed.`,reference:receipt.receiptId});
@@ -89,7 +103,7 @@ export async function simulateAgent(input:{externalAgentId:string;apiKey:string;
     const {response,value}=await post("/api/v1/ai-interactions",input.apiKey,{...common,sessionId:runId,
       response:{contentType:"text/plain",content:simulatedResponse},metadata:{source:"GatewayConsoleSimulator",simulated:"true"},
       promptEvaluationReceiptId:evaluation.evaluationReceiptId},signal);
-    if(!response.ok)failure(response.status);
+    if(!response.ok)failure(response.status,value);
     const receipt=interactionSchema.parse(value);
     if(response.status!==202||receipt.interactionId!==runId)throw new TestRequestError("Interaction receipt did not match this test.",true);
     if(receipt.status==="Failed")throw new TestRequestError("The gateway accepted the record but reported failed interaction processing. Check the agent's Purview configuration.");

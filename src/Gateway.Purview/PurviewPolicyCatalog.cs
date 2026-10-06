@@ -15,11 +15,16 @@ public interface IPurviewPolicyCatalogClient
 
 public static class PurviewPolicyCatalogValidation
 {
+    // Exchange Online catalog reads can take several minutes. Keep the last signed,
+    // tenant-bound readback usable across one slow or failed refresh while still
+    // failing closed if the dedicated publisher stops making progress.
+    public static readonly TimeSpan MaximumAge = TimeSpan.FromMinutes(15);
+
     public static void Validate(PurviewPolicyCatalog catalog, Guid tenantId)
     {
         if (tenantId == Guid.Empty || catalog is null || catalog.TenantId != tenantId || catalog.Items is null ||
             catalog.Items.Count > 2048 || catalog.RetrievedAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
-            catalog.RetrievedAtUtc < DateTimeOffset.UtcNow.AddMinutes(-5) ||
+            catalog.RetrievedAtUtc < DateTimeOffset.UtcNow.Subtract(MaximumAge) ||
             catalog.Items.Any(x => x is null) ||
             catalog.Items.Select(x => x.Id).Distinct().Count() != catalog.Items.Count ||
             catalog.Items.Any(x => x.Id == Guid.Empty || string.IsNullOrWhiteSpace(x.DisplayName) ||

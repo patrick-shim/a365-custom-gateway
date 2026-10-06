@@ -31,7 +31,7 @@ export function AgentTestPanel({agent,onClose}:{agent:TestAgent;onClose:()=>void
       <Field label="Registered API key" hint="Used only for this run. Never saved; cleared when sent or closed."><Input type="password" autoComplete="off" value={key} disabled={busy} onChange={(_,d)=>setKey(d.value)}/></Field>
       <Field label="Test prompt" hint="The prompt may be recorded by the configured Microsoft services."><Textarea value={prompt} rows={5} maxLength={8000} disabled={busy} onChange={(_,d)=>setPrompt(d.value)}/></Field>
       <Field label="User object ID" hint="Prefilled with your signed-in Entra user. Used for Agent 365 and Purview user context."><Input value={user} disabled={busy} onChange={(_,d)=>setUser(d.value)}/></Field>
-      <Button appearance="primary" icon={<Play24Regular/>} disabled={busy||agent.status!=="Active"||!key.trim()||!prompt.trim()||!validUser} onClick={()=>void run()}>Send test prompt</Button>
+      <Button style={{flexShrink:0,minHeight:40}} appearance="primary" icon={<Play24Regular/>} disabled={busy||agent.status!=="Active"||!key.trim()||!prompt.trim()||!validUser} onClick={()=>void run()}>Send test prompt</Button>
       {agent.status!=="Active"&&<Text>This agent must be Active before testing.</Text>}
       <div aria-live="polite" aria-busy={busy} style={{display:"grid",gap:12}}>
         {busy&&<Spinner size="small" label="Running agent test…"/>}

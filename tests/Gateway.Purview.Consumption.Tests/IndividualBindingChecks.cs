@@ -40,7 +40,7 @@ static class IndividualBindingChecks
             if (await repository.IsProtectionContextCurrentAsync(context, default) || await bindings.ReadAsync(agent, default) is not null)
                 throw new Exception("Changed, excluded, or disabled scope retained a trusted binding.");
         }
-        source.Value = source.Value with { Items=[policy], RetrievedAtUtc=DateTimeOffset.UtcNow.AddMinutes(-10) };
+        source.Value = source.Value with { Items=[policy], RetrievedAtUtc=DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1) };
         if (await bindings.ReadAsync(agent, default) is not null) throw new Exception("Expired catalog retained a trusted binding.");
         source.Value = source.Value with { RetrievedAtUtc=DateTimeOffset.UtcNow };
         row.Status="Pending"; await db.SaveChangesAsync();

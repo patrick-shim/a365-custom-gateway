@@ -51,7 +51,7 @@ PurviewPolicyCatalogValidation.Validate(snapshot, tenant);
 Check(PurviewPolicyCatalogValidation.Incompatibility(good) is null, "Compatible existing policy rejected.");
 foreach (var policy in new[] { good with { Mode = "Disable" }, good with { Mode = "TestWithoutNotifications" }, good with { EnforcementPlanes = ["CopilotExperiences"] }, good with { HasUploadTextBlock = false } })
     Check(PurviewPolicyCatalogValidation.Incompatibility(policy) is not null, "Unsupported policy accepted for blocking.");
-foreach (var invalid in new[] { snapshot with { TenantId = Guid.NewGuid() }, snapshot with { RetrievedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10) }, snapshot with { Items = [good, good] }, snapshot with { Items = [null!] }, snapshot with { Items = [good with { Revision = "unversioned" }] } })
+foreach (var invalid in new[] { snapshot with { TenantId = Guid.NewGuid() }, snapshot with { RetrievedAtUtc = DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1) }, snapshot with { Items = [good, good] }, snapshot with { Items = [null!] }, snapshot with { Items = [good with { Revision = "unversioned" }] } })
 {
     try { PurviewPolicyCatalogValidation.Validate(invalid, tenant); throw new Exception("Untrusted catalog accepted."); }
     catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }

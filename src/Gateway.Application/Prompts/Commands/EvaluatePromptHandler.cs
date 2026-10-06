@@ -68,6 +68,10 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             "UserContext.TenantUserObjectId");
 
         var protectionContext = await _promptEvaluationRepository.GetProtectionContextAsync(agent.Id, cancellationToken);
+        if (protectionContext is null && agent.FeatureConfiguration.PurviewEnabled)
+            throw new DomainException(
+                "Purview policy assignment is not ready or its current scope could not be verified. Check Data protection before retrying the test.",
+                ErrorCodes.PURVIEW_ASSIGNMENT_NOT_READY);
         if (protectionContext is null || !protectionContext.MatchesAgent(agent))
             throw InvalidProtectionContext();
 

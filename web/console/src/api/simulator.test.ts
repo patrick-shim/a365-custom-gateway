@@ -40,3 +40,23 @@ it("reports lost interaction responses as unconfirmed and never replays them",as
   const fetch=mock("partial");const result=await simulateAgent(input,new AbortController().signal,()=>{});
   expect(result.outcome).toBe("Partial");expect(result.steps.at(-1)?.status).toBe("Unconfirmed");expect(fetch).toHaveBeenCalledTimes(3);
 });
+it.each([
+  [409,"PURVIEW_ASSIGNMENT_NOT_READY","Purview protection is not ready"],
+  [409,"PURVIEW_INVENTORY_STALE","policy catalog is stale"],
+  [403,"PROMPT_EVALUATION_INVALID","current policy scope could not be verified"],
+  [403,"AGENT_IDENTITY_MISMATCH","different agent"],
+  [403,"AGENT_DISABLED","disabled in the gateway"],
+])("explains HTTP %s %s without sending downstream telemetry",async(status,errorCode,message)=>{
+  const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({errorCode,detail:input.apiKey,correlationId:receipt}),{status:Number(status)}));
+  const result=await simulateAgent(input,new AbortController().signal,()=>{});
+  expect(result.outcome).toBe("Failed");expect(fetch).toHaveBeenCalledTimes(1);
+  expect(result.steps[0].detail).toContain(message);
+  expect(result.steps[0].reference).toBe(receipt);
+  expect(JSON.stringify(result)).not.toContain(input.apiKey);
+});
+it("does not echo unknown error codes or unsafe references",async()=>{
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({errorCode:input.apiKey,correlationId:input.apiKey,detail:input.apiKey}),{status:403}));
+  const result=await simulateAgent(input,new AbortController().signal,()=>{});
+  expect(result.steps[0].detail).toContain("Access denied");
+  expect(JSON.stringify(result)).not.toContain(input.apiKey);
+});
