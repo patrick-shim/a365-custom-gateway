@@ -37,6 +37,8 @@ flowchart LR
 
 The API and worker use .NET 10. PostgreSQL owns registration, protection, receipt, audit and outbox state. Docker Compose supplies the database, RabbitMQ, Vault and S3-compatible storage. Microsoft services provide identity, governance and observability. The Purview management host runs on Windows with a dedicated certificate identity; its signed catalog and authenticated assignment queue are separate from runtime Graph `processContent` calls.
 
+Bootstrap registers a Windows scheduled task to resume the Purview reader when the certificate-owning user signs in. Docker services restart when Docker starts. Automatic recovery on this workstation requires Docker to be running and that Windows user to be signed in. The catalog can take a few minutes to refresh after startup.
+
 The bundled Compose configuration is for local development: loopback ports, development service credentials and Vault development mode. Production hardening, TLS termination, durable secret management and host service supervision require deployment-specific work. Registry beta registration is explicitly gated to development; the source does not claim production registration readiness.
 
 ## Set up and run

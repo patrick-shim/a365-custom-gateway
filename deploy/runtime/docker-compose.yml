@@ -3,6 +3,7 @@ name: ${COMPOSE_PROJECT_NAME:-a365-gateway}
 # Product APIs (Entra, Graph, Agent 365, Purview, Prompt Shields) stay external.
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: gateway
@@ -19,6 +20,7 @@ services:
       retries: 10
 
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:3.13-management-alpine
     ports:
       - "127.0.0.1:5672:5672"
@@ -34,6 +36,7 @@ services:
 
   # S3-compatible API (MinIO Hub pulls are often blocked; Cloudserver works offline-friendly).
   s3:
+    restart: unless-stopped
     image: zenko/cloudserver:latest
     ports:
       - "127.0.0.1:9000:8000"
@@ -55,6 +58,7 @@ services:
       retries: 20
 
   vault:
+    restart: unless-stopped
     image: hashicorp/vault:1.17
     cap_add:
       - IPC_LOCK

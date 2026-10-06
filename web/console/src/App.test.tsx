@@ -55,6 +55,25 @@ async function selectBlueprint() {
 }
 
 describe("Console routes with actual API envelopes", () => {
+  it("keeps one setup card across policy-tab refreshes and tab changes", async () => {
+    let revision = 0;
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...approvalAgent, status: "Active", description: `Read ${++revision}` }));
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({ ...registrationOperation, status: "Completed", requiredAction: null,
+      pollingRecommended: false, percentComplete: 100, steps: registrationOperation.steps.map(x => ({ ...x, status: "Completed" })) }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "Data protection for this agent" });
+    for (let i = 0; i < 4; i++) {
+      const refresh = screen.getByRole("button", { name: "Refresh status" });
+      await waitFor(() => expect(refresh).toBeEnabled());
+      await user.click(refresh);
+      await waitFor(() => expect(refresh).toBeEnabled());
+      await user.click(screen.getByRole("tab", { name: "API key" }));
+      await user.click(screen.getByRole("tab", { name: "Data protection" }));
+      expect(screen.getAllByRole("region", { name: "Agent setup" })).toHaveLength(1);
+      expect(screen.getAllByRole("heading", { name: "Data protection for this agent" })).toHaveLength(1);
+    }
+  });
   it("navigates through every menu page without losing the shell", async () => {
     renderApp();
     const user = userEvent.setup();

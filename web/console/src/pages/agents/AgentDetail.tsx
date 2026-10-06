@@ -49,7 +49,7 @@ export function AgentDetail() {
         <>
           {a.status === "Disabled" && <Card style={{ marginBottom: 16 }}><Text weight="semibold">Disabled on this gateway</Text><Body1>New prompt, activity and AI interaction submissions are blocked. The Agent 365 registration is unchanged.</Body1><Link to="/settings/agents">Manage gateway access</Link></Card>}
           {a.status !== "Disabled" && (a.provisioning || ["Draft", "Provisioning", "AwaitingAdminApproval", "Failed", "RequiresManualIntervention"].includes(a.status)) &&
-            <AgentRegistrationProgress key={id} agent={a} />}
+            <AgentRegistrationProgress key={`setup-${id}`} agent={a} />}
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
             <TabList selectedValue={tab} onTabSelect={(_, data) => {
               if (typeof data.value === "string") setParams(previous => { const next = new URLSearchParams(previous); next.set("tab", data.value as string); return next; });
@@ -77,7 +77,7 @@ export function AgentDetail() {
             {shield.isError && <ErrorState title="The protection change was not confirmed" error={shield.error} />}
             <Caption1>This setting does not enable or disable the agent.</Caption1>
           </Card>}
-          {tab === "data-protection" && <AgentDataProtection key={id} agent={a} />}
+          {tab === "data-protection" && <AgentDataProtection key={`protection-${id}`} agent={a} />}
           {tab === "identity" && <Card style={{ gap: 12, padding: 24 }}>
             {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => void blueprints.refetch()} />}
             <Text weight="semibold">{blueprintName(a, blueprints.data)}</Text>
@@ -87,7 +87,7 @@ export function AgentDetail() {
             <Caption1>Agent identity object ID</Caption1><Body1><code>{a.agent365?.agentIdentityObjectId ?? "Not assigned"}</code></Body1>
             <Body1>Environment: {a.environment}</Body1>
           </Card>}
-          {tab === "api" && <AgentCredentials key={id} agentId={id} externalAgentId={a.externalAgentId} />}
+          {tab === "api" && <AgentCredentials key={`credentials-${id}`} agentId={id} externalAgentId={a.externalAgentId} />}
           {tab === "activity" && <Card style={{ gap: 12, padding: 24 }}>
             <Caption1>Last activity recorded by the Gateway</Caption1><Body1>{formatTime(a.lastActivityAtUtc)}</Body1>
             <Caption1>Configured export destinations</Caption1><Body1>{a.features?.observabilityMode ?? "Not reported"}</Body1>
@@ -96,7 +96,7 @@ export function AgentDetail() {
           </Card>}
         </>
       )}
-      {testing && a && <AgentTestPanel key={id} agent={a} onClose={() => setTesting(false)} />}
+      {testing && a && <AgentTestPanel key={`test-${id}`} agent={a} onClose={() => setTesting(false)} />}
     </>
   );
 }

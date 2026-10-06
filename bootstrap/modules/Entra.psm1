@@ -826,7 +826,7 @@ function Ensure-RuntimeConsoleApplication {
     }
 
     $displayName = "A365 Gateway Console - $($Config.projectName)-$($Config.environment)"
-    $consoleOrigin = "http://127.0.0.1:$ConsoleHostPort"
+    $consoleOrigins = @("http://127.0.0.1:$ConsoleHostPort", "http://localhost:$ConsoleHostPort")
     $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
     $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
     if (-not $application) {
@@ -835,7 +835,7 @@ function Ensure-RuntimeConsoleApplication {
             signInAudience = 'AzureADMyOrg'
             tags = $expectedTags
             isFallbackPublicClient = $false
-            spa = @{ redirectUris = @($consoleOrigin) }
+            spa = @{ redirectUris = $consoleOrigins }
             web = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
             api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @() }
             requiredResourceAccess = @(@{
@@ -870,9 +870,9 @@ function Ensure-RuntimeConsoleApplication {
         throw 'Runtime Console application does not match the exact SPA, permission, and credential-free boundary.'
     }
 
-    if ($spaRedirects.Count -ne 1 -or $spaRedirects[0] -cne $consoleOrigin) {
+    if (-not (Test-ExactStringSet -Actual $spaRedirects -Expected $consoleOrigins)) {
         Invoke-GraphJsonBody -Method 'PATCH' -Url "https://graph.microsoft.com/v1.0/applications/$($application.id)" -Body @{
-            spa = @{ redirectUris = @($consoleOrigin) }
+            spa = @{ redirectUris = $consoleOrigins }
         } | Out-Null
     }
 
@@ -913,7 +913,7 @@ function Ensure-RuntimeConsoleApplication {
         consoleApplicationObjectId = [string]$application.id
         consoleClientId = [string]$application.appId
         consoleServicePrincipalId = [string]$principal.id
-        consoleUrl = $consoleOrigin
+        consoleUrl = $consoleOrigins[0]
         apiScope = "$([string]$Identity.gatewayApiScopeBaseUri)/access_as_user"
         deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     }

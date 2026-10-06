@@ -252,15 +252,32 @@ function Start-RuntimePurviewCatalogHost {
     }
     if ([Convert]::FromBase64String([IO.File]::ReadAllText($keyPath).Trim()).Length -ne 32) { throw 'Invalid assignment authentication key.' }
     $output = Join-Path $root '.bootstrap/tools/purview-catalog-host'
+    $executable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
+    if (($identityPath + $directory + $queue + $keyPath) -match '["\r\n]') { throw 'Unsupported catalog host path.' }
+    $arguments = @("`"$identityPath`"", "`"$directory`"", "`"$queue`"", "`"$keyPath`"")
+    # The certificate private key belongs to this Windows user, so resume at
+    # that user's sign-in rather than running as SYSTEM with no certificate.
+    $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $taskName = 'A365Gateway-Purview-' + ([string]$Identity.applicationId)
+    $action = New-ScheduledTaskAction -Execute $executable -Argument ($arguments -join ' ') -WorkingDirectory $root
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Description 'Resume the gateway Purview catalog and assignment reader using its current-user certificate.' -Force | Out-Null
+    if ((Get-ScheduledTask -TaskName $taskName).State -eq 'Running') {
+        return [ordered]@{ taskName=$taskName; executable=$executable; snapshotDirectory=$directory }
+    }
     $pidFile = Join-Path $directory 'host.json'
     if (Test-Path -LiteralPath $pidFile) {
         $record = ConvertFrom-BootstrapJson -Json (Get-Content -LiteralPath $pidFile -Raw)
         $existing = Get-Process -Id $record.processId -ErrorAction SilentlyContinue
         if ($existing) {
-            if ($existing.Path -ne $record.executable -or $existing.StartTime.ToUniversalTime().ToString('O') -ne $record.startedAtUtc) {
-                throw 'The recorded catalog-host process no longer matches its owned executable and start time.'
+            if ($existing.Path -eq $record.executable -and $existing.StartTime.ToUniversalTime().ToString('O') -eq $record.startedAtUtc) {
+                return $record
             }
-            return $record
+            # Process IDs can be reused after reboot. Do not touch that process.
         }
     }
     Invoke-BootstrapCommand -FilePath 'dotnet' -ArgumentList @('publish', (Join-Path $root 'src/Gateway.Purview.CatalogHost'), '-c', 'Release', '-o', $output, '--nologo') | Out-Null
