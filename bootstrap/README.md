@@ -1,7 +1,9 @@
 # Runtime gateway bootstrap
 
-Bootstrap installs the gateway on Docker Compose: PostgreSQL, RabbitMQ, Vault,
-S3-compatible storage, the C# API and worker, and the React Console.
+Bootstrap installs the gateway on Docker Compose: PostgreSQL, RabbitMQ,
+S3-compatible storage, the C# API and worker, and the React Console. The base
+stack also starts an unwired Vault development container; current application
+secrets come from ignored bootstrap files and generated runtime configuration.
 Microsoft Entra, Graph, Agent 365, Purview and Prompt Shields remain product APIs.
 
 ## Guided installation

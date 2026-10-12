@@ -4,7 +4,7 @@
 
 The terminal installer (`gateway.cmd init`) and React installer (`gateway.cmd gui`) use the same PowerShell engine, configuration schema, reviewed plan and verification. Follow [bootstrap](../../bootstrap/README.md) for tenant prerequisites and permissions. Both collect initial Content Safety and Purview settings; routine policy selection happens in the Console after setup.
 
-The supported local topology is Docker Compose plus a Windows certificate-based Purview management host. Compose runs PostgreSQL, RabbitMQ, Vault, S3-compatible storage, the API, worker and Console. Default service credentials and Vault development mode make this a development configuration.
+The supported local topology is Docker Compose plus a Windows certificate-based Purview management host. Compose runs PostgreSQL, RabbitMQ, S3-compatible storage, the API, worker and Console. The base stack also starts an unwired Vault development container; the application does not currently read secrets from it. Default service credentials and host-file secret handling make this a development configuration.
 
 ## Files that belong to the running installation
 
@@ -53,7 +53,7 @@ Keep the Compose project name stable so existing database and object-store volum
 - `gateway.cmd doctor` checks dependencies and Microsoft sessions. `gateway.cmd diagnose` produces sanitized diagnostics.
 - Open [API reference](http://127.0.0.1:5081/docs) or the Console's API reference link. JSON and YAML contracts are available under `/openapi/v1.json` and `/openapi/v1.yaml`.
 - Use [operator diagnostics](../../tools/scripts/README.md) for explicit DLP testing. A readiness error is not a DLP block.
-- Check the Windows catalog host if catalog snapshots become stale. Keep its bootstrap account and certificate available; a browser sign-in does not repair unattended certificate access.
+- Check the Windows Purview scheduled task if catalog snapshots become stale. It runs at the certificate-owning user's sign-in and every five minutes afterward; a browser sign-in does not replace that Windows account or repair its certificate access.
 - Use [operations](../../operations/README.md) for queue and downstream-delivery boundaries.
 
 `/health` means the API process is responding. `/health/ready` checks database connectivity. Neither proves Purview enforcement, worker completion, or Microsoft destination visibility. Preserve correlation IDs and sanitized error codes for investigations; never include raw prompt content or credentials in support records.

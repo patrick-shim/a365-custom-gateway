@@ -18,17 +18,21 @@ The host verifies the request and applies only the reviewed target delta through
 It reads the scope back and publishes an authenticated result tied to the request.
 The API reconciles that result into the assignment row.
 
-The host polls between catalog reads; each provider invocation has a six-minute
-deadline. Assignment confirmation has a fifteen-minute window. Unknown outcomes
-remain unconfirmed; a timeout does not authorize an automatic second mutation.
-The Console polls status, shows an animated wait and elapsed time, and stops
-the animation on failure, stale/unavailable status or confirmation timeout.
+Task Scheduler starts a bounded host invocation at user sign-in and every five minutes.
+Overlapping invocations are ignored, failed runs are retried, and each provider
+invocation has a six-minute deadline. Assignment confirmation has a fifteen-minute
+window. Unknown outcomes remain unconfirmed; a timeout does not authorize an
+automatic second mutation. The Console polls status, shows an animated wait and
+elapsed time, and stops the animation on failure, stale/unavailable status or
+confirmation timeout.
 
 Assignment does not prove enforcement. The gateway calls Graph protection-scope
 and `processContent` APIs under the selected agent identity. Normal allow,
 synthetic-sensitive block and same-blueprint sibling evidence are separate checks.
 
-The local host is currently a background Windows process, not a reboot-persistent
-service. Its certificate account and process lifetime are operational requirements.
-There is no Azure-hosted executor, Key Vault certificate download, package
-publisher, custom embedded PowerShell host or Azure storage journal.
+The local host is a Windows scheduled task under the certificate-owning user.
+The task resumes after that user signs in and recovers from individual process
+exits through its recurring trigger. The signed-in certificate account remains
+an operational requirement. There is no Azure-hosted executor, Key Vault
+certificate download, package publisher, custom embedded PowerShell host or Azure
+storage journal.

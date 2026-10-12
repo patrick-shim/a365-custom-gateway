@@ -85,8 +85,9 @@ an atomic snapshot through a read-only shared directory, pins the public certifi
 from bootstrap configuration, and rejects tampering, wrong tenants, expired
 certificates, and stale data. Failed refreshes do not publish successful empty data.
 No management private key or administrator token is copied to the Linux API.
-This is the local Compose transport; a production Windows service lifecycle and
-managed shared storage remain deployment work.
+This is the local Compose transport. Bootstrap currently installs a bounded
+Windows scheduled task under the certificate-owning account; a service-managed
+or cloud connector lifecycle and managed shared storage remain deferred work.
 
 The runtime bootstrap provisions a separate management application and a Windows
 certificate, then verifies unattended access through a dedicated DLP role group.

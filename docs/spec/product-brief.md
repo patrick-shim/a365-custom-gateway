@@ -23,7 +23,13 @@ Prompt evaluation runs before the external model. Required protection errors fai
 
 ## Implementation and limits
 
-The current implementation uses C#/.NET 10, React/Fluent UI, PostgreSQL, RabbitMQ, Vault and S3-compatible storage on Docker Compose, plus a Windows Purview certificate host. Registry beta is an explicitly acknowledged development capability. The local Compose defaults are development settings, not a production-hardening claim.
+The current implementation uses C#/.NET 10, React/Fluent UI, PostgreSQL,
+RabbitMQ and S3-compatible storage on Docker Compose, plus a Windows Purview
+certificate host. Compose includes an unwired Vault development container;
+bootstrap currently supplies secrets through ignored host files and generated
+environment values. Registry beta is an explicitly acknowledged development
+capability. The local Compose defaults are development settings, not a
+production-hardening claim.
 
 The gateway does not host models, author Purview policies or classifiers, or interpret a successful policy-scope write as proven blocking. Normal allow, sensitive block, sibling scope and remote telemetry visibility require separate verification.
 

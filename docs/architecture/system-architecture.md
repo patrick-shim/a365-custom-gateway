@@ -26,11 +26,10 @@ How the system is built. For **why** it exists, scope, UI platform, and
 
 ## Objective (architecture view)
 
-The Gateway is a control plane whose **sole purpose** is connecting independently
-hosted agents to **Entra, Graph, Agent 365, Purview, and Prompt Shields**. Each
-registration binds:
+The Gateway is a control plane that connects independently hosted agents to
+**Entra, Graph, Agent 365, Purview, and Prompt Shields**. Each registration binds:
 
-- a generated external agent ID;
+- an external agent ID supplied at registration;
 - a reusable Agent Identity blueprint;
 - a distinct child Entra Agent ID;
 - a Gateway credential lifecycle.
@@ -39,24 +38,28 @@ External agents keep hosting and model calls. The Gateway owns registration,
 ingress credentials, evaluate/ingest receipts, durable provisioning, and
 Purview / Prompt Shields administration.
 
-**Product logic stays intact.** The **running environment** has **zero Microsoft
-infrastructure dependence** — application containers use standard runtime interfaces
-without Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob.
+The tested local deployment uses standard containerized data services rather than
+Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob. Microsoft product
+APIs remain required for the gateway's identity, governance and observability work.
 
 This guide describes the Docker Compose runtime.
 
-## Infrastructure (zero Microsoft dependence)
+## Current runtime infrastructure
 
-| Concern | Target technology | Role |
+| Concern | Implemented technology | Role |
 |---|---|---|
 | Relational state | **PostgreSQL** | Authoritative Gateway state (EF Core) |
 | Messaging | **RabbitMQ** | Provisioning and activity work after transactional outbox |
-| Secrets | **OpenBao** / **HashiCorp Vault** | Certificates, connection material, non-Entra secrets |
-| Content store | **S3-compatible** (MinIO or cloud S3/GCS/Blob-via-S3) | Protected interaction content |
+| Deployment secrets | Ignored host files plus generated Compose environment | Current local-development credential delivery |
+| Content store | **S3-compatible** Zenko CloudServer | Protected interaction content |
 | Compute | **Docker Compose** | API, worker and Console; local Windows Purview catalog host |
-| Images | Any **OCI** registry | Immutable digests |
-| Telemetry mirror | **OpenTelemetry** | Optional sanitized monitoring export |
-| Ingress | Standard TLS reverse proxy / cloud LB | HTTPS termination; trusted proxy CIDRs |
+| Images | Local OCI-compatible images | Bootstrap-built API, worker and Console images |
+| Telemetry | Agent 365 OTLP; optional Azure Monitor | Sanitized spans and activity export according to agent configuration |
+| Ingress | Loopback HTTP by default; configurable trusted proxy networks | Local access and forwarded-scheme validation |
+
+The base Compose file also starts HashiCorp Vault 1.17 in development mode. No
+application service currently uses a Vault client, and OpenBao, Kubernetes and
+cloud-host deployment manifests are not implemented in this repository.
 
 ### Essential Microsoft product services (not infrastructure)
 
@@ -65,11 +68,11 @@ This guide describes the Docker Compose runtime.
 | Entra ID / MSAL | Operator sign-in and API authorization |
 | Microsoft Graph + Agent 365 Registry | Identity blueprints, child Agent IDs, Registry |
 | Agent 365 observability | Default sanitized activity export |
-| Purview + runtime catalog host | Microsoft 365 DLP/KYD and runtime evidence |
+| Purview + runtime catalog host | Existing DLP policy discovery, exact agent assignment and runtime evidence |
 | Prompt Shields | Pre-model prompt-attack evaluation |
 
-These are SaaS/API dependencies for the product's purpose. They do **not** put
-the Gateway's database, bus, secrets, or compute on Microsoft infrastructure.
+These are SaaS/API dependencies for the product's purpose. The current database,
+message bus, object store and application processes run in local Compose.
 
 ## System context
 
@@ -85,8 +88,6 @@ flowchart LR
     Relay --> RegistrationQueue[RabbitMQ registration queue]
     RegistrationQueue --> Worker[Provisioning worker C#]
     Worker --> Db
-    Api --> Vault[OpenBao / Vault]
-    Worker --> Vault
     Api --> Objects[S3-compatible content store]
     Worker -->|workload credential| Graph[Microsoft Graph]
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
@@ -192,19 +193,18 @@ uncertain provider outcomes by exact readback.
 Approved runtime sample tests keep ephemeral raw samples; durable operations keep
 consent hashes and sanitized outcomes.
 
-Telemetry has a narrower delivery guarantee than the outbox. An OpenTelemetry
-mirror (target) or optional Azure Monitor mirror may record a durable attempt marker
-before emission; a local span is not remote delivery proof. Agent 365 acceptance
-does not establish every Microsoft 365 / DSPM / XDR destination.
+Telemetry has a narrower delivery guarantee than the outbox. Agent 365 OTLP or
+optional Azure Monitor emission does not by itself prove visibility in every
+Microsoft 365, Purview or Defender destination.
 
 Runtime maintenance uses the [runtime rebuild instructions](../runtime/README.md#rebuild-after-code-changes).
 
 ## Current management and ingestion boundaries
 
-Agent listing cursor/filter semantics, role boundaries, and activity intake
-limitations are unchanged. Custom activity may be supported by the OTel/Monitor
-mirror path but not necessarily by the Agent 365 exporter. Duplicate new IDs in
-one batch can still hit uniqueness constraints.
+Agent listing uses cursor pagination and server-side filters. Role checks remain
+server-side. The public activity contract includes `Custom`, while the Agent 365
+exporter maps only its supported operation types. Provider acceptance does not
+prove downstream destination visibility.
 
 ## Security invariants
 
@@ -212,10 +212,13 @@ one batch can still hit uniqueness constraints.
 - Delegated Administrator-only Registry completion with one POST per lineage.
 - Reviewed confirmation, concurrency, and exact scope checks for shared policy.
 - No clear credentials, tokens, or raw content in logs, queues, or operational receipts.
-- Secrets live in Vault/OpenBao (target), not in config files or images.
+- Clear credentials and private keys remain in ignored bootstrap files, generated
+  runtime configuration, or the Windows certificate store; they never belong in
+  source control or application images. A production secret provider is deferred.
 - Safe RFC 9457 errors and correlation IDs.
 - Fail-closed enforcement when required provider proof is missing or stale.
-- No required dependency on Azure PaaS for database, bus, secrets, or compute.
+- The tested local baseline does not require Azure PaaS for its database, bus,
+  object store or compute.
 
 See the [data model](data-model.md), [API contract](../api/api-contract.md),
 [provider contracts](microsoft-capabilities.md) and

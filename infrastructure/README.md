@@ -1,7 +1,9 @@
 # Infrastructure assets
 
 Gateway hosting uses [runtime Compose](../deploy/runtime/README.md): PostgreSQL,
-RabbitMQ, Vault/OpenBao, S3-compatible storage and OCI application containers.
+RabbitMQ, S3-compatible storage and OCI application containers. The base stack
+also contains an unwired Vault development container; there is no current
+OpenBao integration or application secret-store client.
 Microsoft Entra, Graph, Agent 365, Purview and Prompt Shields remain product services.
 
 ## Active Bicep templates

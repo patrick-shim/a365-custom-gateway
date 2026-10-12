@@ -1,9 +1,9 @@
 # A365 Gateway Console
 
-## Accepted Purview direction (2026-10-03)
+## Current Purview contract
 
-The [policy-consumption decision](../../docs/architecture/purview-policy-consumption.md) governs new work and supersedes
-older gateway policy-authoring and blueprint-selection plans in this document.
+The [policy-consumption decision](../../docs/architecture/purview-policy-consumption.md)
+governs current behavior.
 Purview policy owners manage SITs/classifiers, rules, thresholds, actions, and
 modes. Gateway administrators select existing compatible policies from Purview
 and apply them to the exact individual agent identity, preserving all unrelated
@@ -23,11 +23,10 @@ decision document for current implementation and evidence; plans are not proof.
 
 React + TypeScript + Fluent UI SPA on the existing **C# / .NET** Gateway REST API.
 
-This package is the **target hosted operator UI** in the product-wide UI
-modernization: **all** Gateway UIs (Console and guided Setup) move to this stack.
-The API it talks to runs on **non-Microsoft infrastructure** (PostgreSQL,
-RabbitMQ, Vault/OpenBao, S3, Compose/Kubernetes on AWS/GCP/on-prem). Product
-calls still use Entra, Graph, Agent 365, Purview, and Prompt Shields.
+This package is the deployed administrator Console. It talks to the ASP.NET Core
+Gateway API and uses Entra, Graph, Agent 365, Purview and Prompt Shields through
+that API. The tested local deployment is Docker Compose with PostgreSQL,
+RabbitMQ and S3-compatible storage.
 
 Product contracts: [product brief](../../docs/spec/product-brief.md).  
 UI platform: [UI design](../../docs/console/design.md).  
@@ -75,9 +74,8 @@ directory as the Docker context. `SOURCE_REVISION` can label the immutable image
 with its source commit. Publish the image to the existing registry and deploy by
 digest; do not recreate the Gateway or its Entra registrations for a UI update.
 
-Hosted Linux x64 (`linux/amd64`) is required for typical Compose/Kubernetes or
-cloud container hosts, even when developing on Windows ARM. The Node build stage
-runs natively; its output is static assets.
+The supplied Compose deployment builds `linux/amd64` images. The Node build stage
+runs natively; its output is static assets served by the Console image.
 
 ```powershell
 docker buildx build --platform linux/amd64 --provenance=false --load `
@@ -184,6 +182,4 @@ provider tests do not prove tenant access or downstream delivery.
 
 `npm run check:reachability` follows imports from the runtime and test entry points
 and rejects orphan TS/TSX files or missing local imports. It runs during image
-builds. The retired Classifiers page and its API helper/schema have been removed;
-its old URL keeps a redirect to Policies. Shared display helpers live in
-`src/api/display.ts`, not in another page component.
+builds. Shared display helpers live in `src/api/display.ts`.

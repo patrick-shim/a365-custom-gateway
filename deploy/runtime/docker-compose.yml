@@ -1,5 +1,5 @@
 name: ${COMPOSE_PROJECT_NAME:-a365-gateway}
-# Zero-Microsoft infrastructure for local / AWS / GCP / on-prem.
+# Local Compose infrastructure for the supported runtime profile.
 # Product APIs (Entra, Graph, Agent 365, Purview, Prompt Shields) stay external.
 services:
   postgres:

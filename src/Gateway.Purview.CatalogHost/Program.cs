@@ -5,10 +5,17 @@ using System.Text.Json;
 using Gateway.Purview;
 
 if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Run the catalog host under the Windows catalog-host certificate account.");
-if (args.Length is < 2 or > 4 || args.Length == 3 && args[2] != "--once")
-    throw new ArgumentException("Usage: CatalogHost <bootstrap-identity.json> <snapshot-directory> [--once]");
-var queueDirectory = args.Length == 4 ? Path.GetFullPath(args[2]) : null;
-var assignmentKey = args.Length == 4 ? (await File.ReadAllTextAsync(args[3])).Trim() : null;
+var runOnce = args.Length switch
+{
+    2 => false,
+    3 when args[2] == "--once" => true,
+    4 => false,
+    5 when args[4] == "--once" => true,
+    _ => throw new ArgumentException(
+        "Usage: CatalogHost <bootstrap-identity.json> <snapshot-directory> [<assignment-queue> <assignment-key>] [--once]")
+};
+var queueDirectory = args.Length >= 4 ? Path.GetFullPath(args[2]) : null;
+var assignmentKey = args.Length >= 4 ? (await File.ReadAllTextAsync(args[3])).Trim() : null;
 var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var identity = JsonSerializer.Deserialize<Identity>(await File.ReadAllTextAsync(args[0]), jsonOptions)
     ?? throw new InvalidOperationException("Missing identity.");
@@ -90,9 +97,9 @@ do
     catch (Exception)
     {
         Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} Catalog refresh failed. Previous data will expire; no success published.");
-        if (args.Length == 3) { Environment.ExitCode = 1; break; }
+        if (runOnce) { Environment.ExitCode = 1; break; }
     }
-    if (args.Length == 3) break;
+    if (runOnce) break;
     try { await Task.Delay(TimeSpan.FromMinutes(1), shutdown.Token); } catch (OperationCanceledException) { break; }
 } while (!shutdown.IsCancellationRequested);
 

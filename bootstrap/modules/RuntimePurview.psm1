@@ -254,42 +254,51 @@ function Start-RuntimePurviewCatalogHost {
     $output = Join-Path $root '.bootstrap/tools/purview-catalog-host'
     $executable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
     if (($identityPath + $directory + $queue + $keyPath) -match '["\r\n]') { throw 'Unsupported catalog host path.' }
-    $arguments = @("`"$identityPath`"", "`"$directory`"", "`"$queue`"", "`"$keyPath`"")
-    # The certificate private key belongs to this Windows user, so resume at
-    # that user's sign-in rather than running as SYSTEM with no certificate.
+    # The certificate private key belongs to this Windows user. Run a bounded
+    # refresh at sign-in and every five minutes so Task Scheduler, rather than an
+    # immortal child process, owns restart and failure recovery.
     $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $taskName = 'A365Gateway-Purview-' + ([string]$Identity.applicationId)
-    $action = New-ScheduledTaskAction -Execute $executable -Argument ($arguments -join ' ') -WorkingDirectory $root
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
-    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-        -Description 'Resume the gateway Purview catalog and assignment reader using its current-user certificate.' -Force | Out-Null
-    if ((Get-ScheduledTask -TaskName $taskName).State -eq 'Running') {
-        return [ordered]@{ taskName=$taskName; executable=$executable; snapshotDirectory=$directory }
+    $registered = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($registered -and $registered.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $taskName
+        $stopDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 100
+            $registered = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        } while ($registered -and $registered.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
+        if ($registered -and $registered.State -eq 'Running') { throw 'The previous Purview scheduled refresh did not stop.' }
     }
+
+    # Migrate the former detached, long-running host only when its recorded
+    # executable and start time still identify the exact process.
     $pidFile = Join-Path $directory 'host.json'
     if (Test-Path -LiteralPath $pidFile) {
         $record = ConvertFrom-BootstrapJson -Json (Get-Content -LiteralPath $pidFile -Raw)
         $existing = Get-Process -Id $record.processId -ErrorAction SilentlyContinue
         if ($existing) {
             if ($existing.Path -eq $record.executable -and $existing.StartTime.ToUniversalTime().ToString('O') -eq $record.startedAtUtc) {
-                return $record
+                $existing.Kill($true)
+                if (-not $existing.WaitForExit(10000)) { throw 'The previous Purview catalog host did not stop.' }
             }
             # Process IDs can be reused after reboot. Do not touch that process.
         }
+        [IO.File]::Delete($pidFile)
     }
+
     Invoke-BootstrapCommand -FilePath 'dotnet' -ArgumentList @('publish', (Join-Path $root 'src/Gateway.Purview.CatalogHost'), '-c', 'Release', '-o', $output, '--nologo') | Out-Null
     $executable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
-    # Start-Process requires explicit argument quoting for paths containing spaces.
-    if (($identityPath + $directory + $queue + $keyPath) -match '["\r\n]') { throw 'Unsupported catalog host path.' }
-    $process = Start-Process -FilePath $executable -ArgumentList @("`"$identityPath`"", "`"$directory`"", "`"$queue`"", "`"$keyPath`"") `
-        -WorkingDirectory $root -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput (Join-Path $directory 'host.log') -RedirectStandardError (Join-Path $directory 'host-errors.log')
-    $record = [ordered]@{ processId=$process.Id; executable=$executable; startedAtUtc=$process.StartTime.ToUniversalTime().ToString('O'); snapshotDirectory=$directory }
-    [IO.File]::WriteAllText($pidFile, ($record | ConvertTo-Json))
-    return $record
+    $arguments = @("`"$identityPath`"", "`"$directory`"", "`"$queue`"", "`"$keyPath`"", '--once')
+    $action = New-ScheduledTaskAction -Execute $executable -Argument ($arguments -join ' ') -WorkingDirectory $root
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+    $recoveryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5)
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 8) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $recoveryTrigger) -Principal $principal -Settings $settings `
+        -Description 'Refresh the gateway Purview catalog and process assignments using its current-user certificate.' -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    return [ordered]@{ taskName=$taskName; executable=$executable; snapshotDirectory=$directory; mode='scheduled-one-shot'; intervalMinutes=5 }
 }
 
 Export-ModuleMember -Function Ensure-RuntimePurviewManagementIdentity,Set-RuntimePurviewManagementRoleGroup,Test-RuntimePurviewManagementAccess,Start-RuntimePurviewCatalogHost,Assert-RuntimePurviewPrerequisites

@@ -1,9 +1,9 @@
 # Microsoft provider contracts
 
-## Accepted Purview direction (2026-10-03)
+## Current Purview contract
 
-The [policy-consumption decision](purview-policy-consumption.md) governs new work and supersedes
-older gateway policy-authoring and blueprint-selection plans in this document.
+The [policy-consumption decision](purview-policy-consumption.md) governs current
+behavior.
 Purview policy owners manage SITs/classifiers, rules, thresholds, actions, and
 modes. Gateway administrators select existing compatible policies from Purview
 and apply them to the exact individual agent identity, preserving all unrelated
@@ -25,10 +25,9 @@ decision document for current implementation and evidence; plans are not proof.
 Contracts for the **essential Microsoft product services** this Gateway exists
 to use: **Entra, Graph, Agent 365, Purview, and Prompt Shields**.
 
-These are **not** infrastructure. Gateway hosting must have **zero Microsoft
-dependence** (PostgreSQL, RabbitMQ, Vault/OpenBao, S3, Compose/Kubernetes on
-AWS/GCP/on-prem). Do not require Azure SQL, Service Bus, Key Vault, Container
-Apps, ACR, or Blob to run.
+These product integrations are distinct from the tested local runtime, which uses
+PostgreSQL, RabbitMQ, an S3-compatible object store and Docker Compose. This
+repository does not contain Kubernetes or cloud-host deployment profiles.
 
 UI modernization does not change these provider boundaries. Product scope:
 [product brief](../spec/product-brief.md). This is not a fresh provider-docs
@@ -87,60 +86,40 @@ Provider references:
 
 ## Purview runtime and policy administration
 
-| Capability | Retained Gateway contract |
+| Capability | Current Gateway contract |
 |---|---|
-| Protection scopes | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/protectionScopes/compute; ProtectionScopes.Compute.User |
-| Content processing | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/processContent; Content.Process.User |
-| Content activity | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/activities/contentActivities; ContentActivity.Write |
-| Tenant SIT inventory | Get-DlpSensitiveInformationType after Connect-IPPSSession |
-| Know Your Data | Fixed-scope New/Get/Set-FeatureConfiguration operations |
-| DLP authoring | Bounded Security & Compliance PowerShell policy/rule operations with exact readback |
+| Protection scopes | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/protectionScopes/compute`; child identity role `ProtectionScopes.Compute.User` |
+| Content processing | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/processContent`; child identity role `Content.Process.User` |
+| Content activity | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/activities/contentActivities` for upload/download activity submitted by the runtime client |
+| Policy catalog | Certificate-authenticated `Get-DlpCompliancePolicy` and `Get-DlpComplianceRule` through the Windows catalog host |
+| Policy assignment | `Set-DlpCompliancePolicy -Locations ...` with an exact individual-agent add, followed by policy and rule readback |
 
-Runtime processing distinguishes inline decisions from accepted/offline work.
-A successful HTTP response alone is not an allow/block verdict. DownloadText
-processing can be offline and cannot then prove response-side blocking.
-
-Know Your Data uses Entra Group location
-`ee1680d0-702f-4090-b26c-c49091e86531`. DLP uses the reusable blueprint application
-as an Entra Individual location. Both use the Application plane. Policies shared
-by a blueprint are not isolated to one registration.
-
-SIT choices bind the tenant inventory GUID and exact Unicode name. The source
-re-resolves exact inventory membership rather than accepting a static catalog,
-free-text type or Graph sensitivity label. Multiple selected SITs use OR semantics
-with independent count/confidence thresholds.
-Native settings operations share one fresh catalog within an invocation, import
-only their required commands and check expiry immediately before writes. This
-is bounded execution, not background catalog caching or automatic authority
-renewal. A newly reviewed existing-profile reconciliation can accept the current
-generation for unchanged settings and invalidate old proof; its provider work
-remains read-only.
-
-Four policy modes map to the provider: Enforce to Enable, SimulationWithTips to
-TestWithNotifications, SimulationWithoutTips to TestWithoutNotifications, and
-Disabled to Disable. Verified simulation or configured-off status is distinct
-from certified enforcement.
-
-Directory-role readback and usable runtime-token roles are separate evidence.
-The runtime certification path safely verifies roles and behavior without exposing
-raw tokens. It binds the current profile, inventory, identity and approved samples;
-stale or uncertain results cannot establish readiness.
+The gateway does not create or edit sensitive information types, classifiers,
+rules, thresholds, actions, modes or exclusions. The standalone Purview diagnostic
+script may read sensitive-information-type inventory for troubleshooting, but
+that is not a product catalog or policy-authoring feature.
 
 Bootstrap establishes certificate-authenticated management access through the
-[runtime catalog host](purview-catalog-host.md). The Console selects existing
-policies and adds individual agent targets. The gateway independently obtains
-agent tokens for Graph runtime evaluation. Management assignment readback does
-not prove runtime policy propagation or blocking.
+[runtime catalog host](purview-catalog-host.md). The host publishes a signed,
+tenant-bound catalog of existing policies and accepts authenticated assignment
+requests. It preserves existing targets and exclusions, rejects conflicting
+scope, and verifies the policy and rule revision after its add operation.
+
+The Console reviews an existing compatible policy and binds confirmation to the
+exact child agent identity and reviewed revision. A successful management write
+does not prove runtime propagation or blocking. The gateway independently obtains
+the child's token, computes protection scope, and sends content to `processContent`
+before allowing the external model sequence. Missing or ambiguous required
+provider evidence fails closed.
 
 Provider references:
-[custom AI configuration](https://learn.microsoft.com/purview/developer/configurepurview),
 [data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api),
 [compute protection scopes](https://learn.microsoft.com/graph/api/userprotectionscopecontainer-compute?view=graph-rest-1.0),
 [process content](https://learn.microsoft.com/graph/api/userdatasecurityandgovernance-processcontent?view=graph-rest-1.0),
 [content activities](https://learn.microsoft.com/graph/api/activitiescontainer-post-contentactivities?view=graph-rest-1.0),
-[SIT inventory](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpsensitiveinformationtype?view=exchange-ps),
-[DLP policy](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancepolicy?view=exchange-ps),
-[DLP rule](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancerule?view=exchange-ps),
+[Get-DlpCompliancePolicy](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpcompliancepolicy?view=exchange-ps),
+[Get-DlpComplianceRule](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpcompliancerule?view=exchange-ps),
+[Set-DlpCompliancePolicy](https://learn.microsoft.com/powershell/module/exchangepowershell/set-dlpcompliancepolicy?view=exchange-ps),
 [module platform support](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
 
 ## Prompt Shields (essential product service)
@@ -168,7 +147,7 @@ Provider references (when using Azure AI Content Safety as the provider):
 |---|---|
 | Database | PostgreSQL |
 | Queues | RabbitMQ with duplicate-safe consumers |
-| Secrets | Runtime credentials and configured OpenBao / Vault integration |
+| Secrets | Ignored bootstrap files, generated Compose environment, and Windows certificate store |
 | Compute / images | Local Compose deployment and OCI images |
 | Purview management | Local Windows catalog host with certificate authentication |
 

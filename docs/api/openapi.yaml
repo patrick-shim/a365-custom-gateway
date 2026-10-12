@@ -724,8 +724,8 @@ paths:
     delete:
       tags:
         - Agents
-      summary: Delete a gateway registration
-      description: "Deletes the gateway registration according to lifecycle rules. Linked Microsoft identities and Registry resources are not automatically deleted.\n\nAuthorization policy: AdministratorOnly."
+      summary: Permanently deregister a registered agent
+      description: "Administrator only. Requires expectedRowVersion from a freshly reviewed agent and confirmPermanentDeletion=true. Blocks gateway use, deletes the exact identity-bound Agent 365 Registry record with delegated Graph access, verifies absence, then tombstones the gateway registration. Returns 200 only when complete. Unconfirmed deletions remain Deleting and can be retried after refreshing the row version. Entra identities, shared blueprints, Purview policies and audit history are retained. Active, Disabled and Deleting registrations only; unfinished provisioning must be resolved first.\n\nAuthorization policy: AdministratorOnly."
       operationId: Agents.DeleteAgent
       parameters:
         - name: agentId
@@ -734,9 +734,21 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteRegisteredAgentRequest'
+          text/json:
+            schema:
+              $ref: '#/components/schemas/DeleteRegisteredAgentRequest'
+          application/*+json:
+            schema:
+              $ref: '#/components/schemas/DeleteRegisteredAgentRequest'
+        required: true
       responses:
-        '202':
-          description: Accepted
+        '200':
+          description: OK
           content:
             text/plain:
               schema:
@@ -747,6 +759,42 @@ paths:
             text/json:
               schema:
                 $ref: '#/components/schemas/DeleteAgentResponse'
+        '400':
+          description: Bad Request
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Service Unavailable
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: Not Found
           content:
@@ -2441,6 +2489,16 @@ components:
             - object
           additionalProperties:
             type: string
+    DeleteRegisteredAgentRequest:
+      required:
+        - expectedRowVersion
+        - confirmPermanentDeletion
+      type: object
+      properties:
+        expectedRowVersion:
+          type: string
+        confirmPermanentDeletion:
+          type: boolean
     EvaluatePromptRequest:
       required:
         - externalAgentId
