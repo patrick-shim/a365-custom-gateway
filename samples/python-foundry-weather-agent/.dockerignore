@@ -1,0 +1,6 @@
+*
+!requirements-mcp.txt
+!weather_agent/
+weather_agent/*
+!weather_agent/__init__.py
+!weather_agent/weather_mcp_server.py

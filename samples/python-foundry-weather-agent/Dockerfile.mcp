@@ -1,0 +1,22 @@
+FROM python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=5091
+
+WORKDIR /app
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=
+
+COPY requirements-mcp.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-mcp.txt
+
+COPY weather_agent/__init__.py weather_agent/__init__.py
+COPY weather_agent/weather_mcp_server.py weather_agent/weather_mcp_server.py
+
+USER 65532:65532
+EXPOSE 5091
+
+CMD ["python", "-m", "weather_agent.weather_mcp_server"]

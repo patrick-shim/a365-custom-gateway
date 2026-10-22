@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#13080e">
+  <title>Foundry Weather Agent</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <a class="skip-link" href="#message-input">Skip to message</a>
+
+  <main class="app-shell">
+    <aside class="side-panel" aria-label="Agent connection overview">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 36 36" role="img">
+            <path d="M9.5 22.5 15 17l4.2 4.2L27 13.4" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="9" cy="23" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="15.3" cy="16.7" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="27" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </div>
+        <div>
+          <p class="eyebrow">A365 Gateway demo</p>
+          <p class="brand-name">Foundry Weather Agent</p>
+        </div>
+      </div>
+
+      <section class="identity-card" aria-labelledby="identity-title">
+        <div class="section-heading-row">
+          <div>
+            <p class="eyebrow" id="identity-title">Agent under test</p>
+            <p class="identity-value" id="agent-identity" aria-live="polite">Not selected</p>
+          </div>
+          <span class="identity-icon" title="Request-scoped agent selection" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M8 8.5a4 4 0 1 1 8 0 4 4 0 0 1-8 0Zm-3 11c.8-3.3 3.1-5 7-5s6.2 1.7 7 5M4 4v4M2 6h4M18 13v4M16 15h4"/></svg>
+          </span>
+        </div>
+        <p class="muted-copy">Choose any registered external agent below, then use its matching Gateway key. This loopback demo saves both values in this browser until you clear them.</p>
+        <button class="secondary-button clear-credentials-button" id="clear-saved-credentials" type="button">Clear saved agent</button>
+      </section>
+
+      <section class="service-card" aria-labelledby="services-title">
+        <div class="section-heading-row">
+          <div>
+            <p class="eyebrow" id="services-title">Service readiness</p>
+            <p class="section-title">Connection status</p>
+          </div>
+          <button class="icon-button" id="refresh-status" type="button" aria-label="Refresh service status" title="Refresh service status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.2 7.2A8 8 0 1 0 20 14M19.2 7.2V3.8m0 3.4h-3.4"/></svg>
+          </button>
+        </div>
+        <ul class="service-list" id="service-list">
+          <li class="service-row" data-service="gateway">
+            <span class="service-icon gateway-icon" aria-hidden="true">G</span>
+            <span class="service-copy"><strong>Gateway</strong><small>Checking connection</small></span>
+            <span class="status-chip is-checking"><span class="status-dot"></span><span>Checking</span></span>
+          </li>
+          <li class="service-row" data-service="foundry">
+            <span class="service-icon foundry-icon" aria-hidden="true">F</span>
+            <span class="service-copy"><strong>Foundry</strong><small>Configured; tested on the first protected request</small></span>
+            <span class="status-chip is-checking"><span class="status-dot"></span><span>Loading</span></span>
+          </li>
+          <li class="service-row" data-service="mcp">
+            <span class="service-icon mcp-icon" aria-hidden="true">M</span>
+            <span class="service-copy"><strong>MCP weather</strong><small>Checking tool server</small></span>
+            <span class="status-chip is-checking"><span class="status-dot"></span><span>Checking</span></span>
+          </li>
+        </ul>
+      </section>
+
+      <section class="flow-card" aria-labelledby="flow-title">
+        <p class="eyebrow" id="flow-title">Selected evaluation flow</p>
+        <ol class="flow-list">
+          <li><span>1</span><p><strong>Prompt evaluation</strong><small>On by default; runs before Foundry.</small></p></li>
+          <li><span>2</span><p><strong>Call model and tools</strong><small>Foundry and MCP run after the selected input path.</small></p></li>
+          <li><span>3</span><p><strong>Response evaluation</strong><small>Optional only when prompt evaluation is on.</small></p></li>
+        </ol>
+      </section>
+    </aside>
+
+    <section class="chat-panel" aria-labelledby="page-title">
+      <header class="chat-header">
+        <div>
+          <p class="eyebrow">Live agent chat</p>
+          <h1 id="page-title">Foundry Weather Agent</h1>
+          <p class="header-description">Ask about current weather. Each turn reports the selected evaluation, model, and MCP stages.</p>
+        </div>
+        <button class="secondary-button" id="clear-chat" type="button">New conversation</button>
+      </header>
+
+      <div class="system-notice" id="system-notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="chat-transcript" id="chat-transcript" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat transcript">
+        <article class="welcome-card" id="welcome-card">
+          <div class="weather-visual" aria-hidden="true">
+            <svg viewBox="0 0 88 64"><circle cx="57" cy="22" r="12"/><path d="M18 48h49a12 12 0 0 0-1.5-23.9A19 19 0 0 0 29.8 29 10 10 0 0 0 18 48Z"/></svg>
+          </div>
+          <p class="eyebrow">Ready for a live test</p>
+          <h2>Ask for the weather anywhere.</h2>
+          <p>The agent can look up public current-weather data through MCP using the evaluation mode you select below.</p>
+          <div class="suggestion-list" aria-label="Suggested prompts">
+            <button type="button" class="suggestion">What is the weather in Seoul today?</button>
+            <button type="button" class="suggestion">What are the current conditions in London?</button>
+            <button type="button" class="suggestion">Compare the temperature in Sydney and Tokyo.</button>
+          </div>
+        </article>
+      </section>
+
+      <form class="composer" id="chat-form" novalidate>
+        <div class="credential-entry">
+          <div class="credential-grid">
+            <div class="credential-field" id="external-agent-id-field">
+              <div class="credential-heading">
+                <label for="external-agent-id-input">External agent ID</label>
+                <span>Required</span>
+              </div>
+              <input
+                id="external-agent-id-input"
+                type="text"
+                minlength="3"
+                maxlength="128"
+                pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,127}"
+                placeholder="For example, my-agent-01"
+                autocomplete="off"
+                autocapitalize="none"
+                spellcheck="false"
+                aria-describedby="external-agent-id-help external-agent-id-error"
+                aria-invalid="false"
+                required
+              >
+              <p id="external-agent-id-help">Enter the exact external agent ID shown in the Gateway Console. Saved locally for this POC.</p>
+              <p class="field-error" id="external-agent-id-error" role="alert" hidden>Use 3–128 letters, numbers, dots, hyphens, or underscores, starting with a letter or number.</p>
+            </div>
+            <div class="credential-field">
+              <div class="credential-heading">
+                <label for="gateway-key-input">Gateway key for <span id="gateway-key-agent">selected agent</span></label>
+                <span>Required for each request</span>
+              </div>
+              <input
+                id="gateway-key-input"
+                type="password"
+                minlength="86"
+                maxlength="86"
+                placeholder="Paste the registered agent key"
+                autocomplete="new-password"
+                autocapitalize="none"
+                spellcheck="false"
+                aria-describedby="gateway-key-help"
+                required
+              >
+              <p id="gateway-key-help">Stored in this browser for this loopback POC. Use Clear saved agent to remove it.</p>
+            </div>
+          </div>
+          <p class="credential-storage-message" id="credential-storage-message" role="status" aria-live="polite">Local POC storage is on. Do not use a shared browser.</p>
+        </div>
+        <fieldset class="evaluation-controls" aria-describedby="evaluation-mode-message">
+          <legend>Evaluation for this request</legend>
+          <div class="evaluation-options">
+            <label class="evaluation-option" for="prompt-evaluation-toggle">
+              <span class="evaluation-copy">
+                <strong>Evaluate prompt</strong>
+                <small>Gateway checks input before Foundry.</small>
+              </span>
+              <input id="prompt-evaluation-toggle" type="checkbox" role="switch" checked>
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+            <label class="evaluation-option" for="response-evaluation-toggle">
+              <span class="evaluation-copy">
+                <strong>Evaluate response</strong>
+                <small>Gateway checks output before it is shown.</small>
+              </span>
+              <input id="response-evaluation-toggle" type="checkbox" role="switch" checked>
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <p class="evaluation-mode-message" id="evaluation-mode-message" role="status" aria-live="polite">
+            Full evaluation is on. The response appears only after Gateway acceptance.
+          </p>
+        </fieldset>
+        <label for="message-input" class="sr-only">Message for Foundry Weather Agent</label>
+        <div class="composer-frame">
+          <textarea id="message-input" name="message" rows="1" maxlength="4000" placeholder="Ask about the weather…" autocomplete="off" required aria-describedby="composer-help"></textarea>
+          <button class="send-button" id="send-button" type="submit" disabled>
+            <span class="send-label">Send</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 4 15 8-15 8 3-8-3-8Zm3 8h12"/></svg>
+          </button>
+        </div>
+        <div class="composer-meta">
+          <span id="composer-help">Enter to send · Shift+Enter for a new line</span>
+          <span id="evaluation-summary">Prompt and response evaluation are on.</span>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
