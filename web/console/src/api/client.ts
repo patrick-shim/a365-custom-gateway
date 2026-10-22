@@ -9,6 +9,7 @@ import {
   registrationSchema, revokedCredentialSchema,
   systemConfigSchema, registrationOperationSchema, registrationCompletionSchema,
   provisioningHistorySchema, operationIdSchema, retryProvisioningSchema, purviewPolicyCatalogSchema,
+  purviewConnectionSchema, purviewConnectorOperationAcceptedSchema, purviewConnectorOperationSchema,
   type RegisterAgentRequest,
 } from "./types";
 
@@ -92,7 +93,7 @@ function mutationHeaders(expectedRowVersion: string, idempotencyKey: string): He
 }
 
 const assignmentReviewSchema = z.object({ operationId: z.string().uuid(), agentId: z.string().uuid(), agentIdentityId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), expiresAtUtc: z.string(), effect: z.string() });
-const assignmentListSchema = z.object({ agentId: z.string().uuid(), agentIdentityId: z.string().nullable(), bindingCurrent: z.boolean(), allowObservedAtUtc: z.string().nullable(), blockObservedAtUtc: z.string().nullable(), items: z.array(z.object({ operationId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), status: z.enum(["Pending", "Assigned", "Failed"]), failureCode: z.string().nullable(), confirmedAtUtc: z.string().datetime({ offset: true }).nullable().optional(), expiresAtUtc: z.string().datetime({ offset: true }).optional(), assignedAtUtc: z.string().nullable() })) });
+const assignmentListSchema = z.object({ agentId: z.string().uuid(), agentIdentityId: z.string().nullable(), bindingCurrent: z.boolean(), allowObservedAtUtc: z.string().nullable(), blockObservedAtUtc: z.string().nullable(), items: z.array(z.object({ operationId: z.string().uuid(), policyId: z.string().uuid(), policyName: z.string(), status: z.enum(["Pending", "Assigned", "Failed", "NeedsAttention"]), failureCode: z.string().nullable(), confirmedAtUtc: z.string().datetime({ offset: true }).nullable().optional(), expiresAtUtc: z.string().datetime({ offset: true }).optional(), assignedAtUtc: z.string().nullable() })) });
 export const api = {
   async setAgentEnabled(agentId: string, enabled: boolean) {
     const result = await json(z.object({ agentId: z.string().uuid(), status: z.literal(enabled ? "Active" : "Disabled"), effectiveAtUtc: z.string() }),
@@ -208,10 +209,39 @@ export const api = {
   async listPurviewPolicies() {
     const catalog = await json(purviewPolicyCatalogSchema, "/api/v1/protection/purview/policies");
     const age = Date.now() - Date.parse(catalog.retrievedAtUtc);
-    if (catalog.tenantId !== config.tenantId || age > 300_000 || age < -60_000 || new Set(catalog.items.map(p => p.id)).size !== catalog.items.length) {
-      throw new ApiError("A current policy catalog for this tenant could not be confirmed.", 503, "PURVIEW_POLICY_CATALOG_INVALID");
+    if (catalog.tenantId !== config.tenantId || age < -60_000 || new Set(catalog.items.map(p => p.id)).size !== catalog.items.length) {
+      throw new ApiError("A verified policy catalog for this tenant could not be confirmed.", 503, "PURVIEW_POLICY_CATALOG_INVALID");
     }
     return catalog;
+  },
+  async getPurviewConnection() {
+    const connection = await json(purviewConnectionSchema, "/api/v1/protection/purview/connection");
+    if (connection.tenantId !== config.tenantId) {
+      throw new ApiError("The Purview connection does not belong to this Console tenant.", 503,
+        "PURVIEW_CONNECTION_TENANT_MISMATCH");
+    }
+    return connection;
+  },
+  startPurviewConnection(expectedRowVersion: string, idempotencyKey = crypto.randomUUID()) {
+    return json(purviewConnectorOperationAcceptedSchema, "/api/v1/protection/purview/connection", "POST",
+      { confirmConnection: true }, mutationHeaders(expectedRowVersion, idempotencyKey));
+  },
+  refreshPurviewPolicies(expectedRowVersion: string, idempotencyKey = crypto.randomUUID()) {
+    return json(purviewConnectorOperationAcceptedSchema, "/api/v1/protection/purview/connection/refresh", "POST",
+      {}, mutationHeaders(expectedRowVersion, idempotencyKey));
+  },
+  async getPurviewConnectorOperation(operationId: string) {
+    if (!operationIdSchema.safeParse(operationId).success) {
+      throw new ApiError("The Gateway did not supply a valid Purview operation ID. No operation was requested.",
+        200, "INVALID_OPERATION_ID");
+    }
+    const result = await json(purviewConnectorOperationSchema,
+      `/api/v1/operations/${encodeURIComponent(operationId)}`);
+    if (result.operationId !== operationId) {
+      throw new ApiError("The operation response does not match this Purview request. Refresh its status.",
+        200, "OPERATION_MISMATCH");
+    }
+    return result;
   },
   getSystemConfig: () => json(systemConfigSchema, "/api/v1/system/config"),
   setPromptShieldDefault(enabled: boolean, expectedRowVersion: string) {

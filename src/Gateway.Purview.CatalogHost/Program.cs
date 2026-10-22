@@ -1,120 +1,129 @@
-using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Text.Json;
 using Gateway.Purview;
+using Gateway.Purview.CatalogHost;
 
-if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Run the catalog host under the Windows catalog-host certificate account.");
-var runOnce = args.Length switch
+internal static class Program
 {
-    2 => false,
-    3 when args[2] == "--once" => true,
-    4 => false,
-    5 when args[4] == "--once" => true,
-    _ => throw new ArgumentException(
-        "Usage: CatalogHost <bootstrap-identity.json> <snapshot-directory> [<assignment-queue> <assignment-key>] [--once]")
-};
-var queueDirectory = args.Length >= 4 ? Path.GetFullPath(args[2]) : null;
-var assignmentKey = args.Length >= 4 ? (await File.ReadAllTextAsync(args[3])).Trim() : null;
-var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-var identity = JsonSerializer.Deserialize<Identity>(await File.ReadAllTextAsync(args[0]), jsonOptions)
-    ?? throw new InvalidOperationException("Missing identity.");
-if (!identity.AccessVerified || identity.TenantId == Guid.Empty || identity.ApplicationId == Guid.Empty ||
-    string.IsNullOrWhiteSpace(identity.Organization) || identity.CertificateThumbprint.Length != 40)
-    throw new InvalidOperationException("Bootstrap must verify the dedicated identity first.");
-var destination = Path.GetFullPath(args[1]);
-Directory.CreateDirectory(destination);
-using var ownershipLock = new FileStream(Path.Combine(destination, "publisher.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-store.Open(OpenFlags.ReadOnly);
-var matches = store.Certificates.Find(X509FindType.FindByThumbprint, identity.CertificateThumbprint, false);
-if (matches.Count != 1 || !matches[0].HasPrivateKey) throw new InvalidOperationException("Exact bootstrap certificate unavailable.");
-using var certificate = matches[0];
-// This is public trust material. Bootstrap pins it in API configuration separately;
-// the API must never accept a public key supplied alongside an untrusted snapshot.
-await File.WriteAllTextAsync(Path.Combine(destination, "publisher-public-certificate.txt"), Convert.ToBase64String(certificate.RawData));
-using var shutdown = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
-do
-{
-    try
+    public static async Task<int> Main(string[] args)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
-        deadline.CancelAfter(TimeSpan.FromMinutes(6));
-        PolicyAssignmentRequest? assignmentRequest = null;
-        string? jobPrefix = null;
-        if (queueDirectory is not null && Directory.Exists(queueDirectory))
-        {
-            foreach (var path in Directory.EnumerateFiles(queueDirectory, "*.request.json").Order())
-            {
-                if (File.Exists(path.Replace(".request.json", ".result.json"))) continue;
-                try
-                {
-                    if (new FileInfo(path).Length > 32768) continue;
-                    var candidate = PolicyAssignmentProtocol.Verify<PolicyAssignmentRequest>(await File.ReadAllTextAsync(path), assignmentKey!, "request");
-                    PolicyAssignmentProtocol.Validate(candidate, identity.TenantId);
-                    if (Path.GetFileName(path) != candidate.OperationId.ToString("D") + ".request.json") continue;
-                    assignmentRequest = candidate; jobPrefix = Path.Combine(queueDirectory, candidate.OperationId.ToString("D")); break;
-                }
-                catch (Exception) { Console.Error.WriteLine("Invalid or expired assignment request ignored."); }
-            }
-        }
-        var requestPath = Path.Combine(destination, "active-assignment.json");
-        if (assignmentRequest is not null) await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(assignmentRequest, jsonOptions));
-        var start = new ProcessStartInfo("pwsh.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-File", Path.Combine(AppContext.BaseDirectory, "Read-Catalog.ps1"),
-            "-TenantId", identity.TenantId.ToString(), "-ApplicationId", identity.ApplicationId.ToString(), "-Organization", identity.Organization,
-            "-CertificateThumbprint", identity.CertificateThumbprint }) start.ArgumentList.Add(argument);
-        if (assignmentRequest is not null) { start.ArgumentList.Add("-AssignmentRequestPath"); start.ArgumentList.Add(requestPath); }
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Catalog reader could not start.");
-        string output;
         try
         {
-            var stdout = ReadBoundedAsync(process.StandardOutput, 1_500_000, deadline.Token);
-            var stderr = ReadBoundedAsync(process.StandardError, 16_384, deadline.Token);
-            await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(deadline.Token));
-            if (process.ExitCode != 0) throw new InvalidOperationException("Catalog read failed.");
-            output = await stdout;
+            await RunAsync(args);
+            return 0;
         }
-        finally { if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); } }
-        var read = JsonSerializer.Deserialize<HostRead>(output, jsonOptions) ?? throw new JsonException("Missing readback.");
-        var catalog = read.Catalog;
-        PurviewPolicyCatalogValidation.Validate(catalog, identity.TenantId);
-        var envelope = PurviewCatalogSignature.Sign(catalog, certificate);
-        var staging = Path.Combine(destination, "catalog.json.tmp");
-        await File.WriteAllTextAsync(staging, JsonSerializer.Serialize(envelope, jsonOptions), shutdown.Token);
-        File.Move(staging, Path.Combine(destination, "catalog.json"), overwrite: true);
-        if (assignmentRequest is not null && read.Assignment is { } result)
+        catch (Exception failure)
         {
-            var response = new PolicyAssignmentResult(assignmentRequest.OperationId, identity.TenantId, assignmentRequest.AgentIdentityId,
-                assignmentRequest.PolicyId, PolicyAssignmentProtocol.Digest(assignmentRequest), result.Assigned,
-                result.Revision, result.FailureCode, DateTime.UtcNow);
-            await PolicyAssignmentProtocol.WriteAtomicAsync(jobPrefix + ".result.json", PolicyAssignmentProtocol.Sign(response, assignmentKey!, "result"), shutdown.Token);
-        }
-        Console.WriteLine($"{DateTimeOffset.UtcNow:O} Catalog refreshed: {catalog.Items.Count} policies.");
-    }
-    catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; }
-    catch (Exception)
-    {
-        Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} Catalog refresh failed. Previous data will expire; no success published.");
-        if (runOnce) { Environment.ExitCode = 1; break; }
-    }
-    if (runOnce) break;
-    try { await Task.Delay(TimeSpan.FromMinutes(1), shutdown.Token); } catch (OperationCanceledException) { break; }
-} while (!shutdown.IsCancellationRequested);
+            // This project publishes a Windows GUI-subsystem apphost so the
+            // scheduled listener never opens a terminal. Keep every top-level
+            // failure handled so Windows records the nonzero task result without
+            // presenting an unhandled-exception or WER dialog. Bootstrap invokes
+            // the managed DLL and can therefore capture this diagnostic.
+            try
+            {
+                Console.Error.WriteLine(
+                    $"Purview connector stopped ({failure.GetType().Name}): {failure.Message}");
+            }
+            catch
+            {
+                // Returning a failure code is still authoritative if stderr is
+                // unavailable to the GUI-subsystem process.
+            }
 
-static async Task<string> ReadBoundedAsync(StreamReader reader, int maximum, CancellationToken ct)
-{
-    var text = new StringBuilder();
-    var buffer = new char[4096];
-    int count;
-    while ((count = await reader.ReadAsync(buffer, ct)) != 0)
-    {
-        if (text.Length + count > maximum) throw new InvalidOperationException("Reader output exceeded bound.");
-        text.Append(buffer, 0, count);
+            return 1;
+        }
     }
-    return text.ToString();
+
+    private static async Task RunAsync(string[] args)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new InvalidOperationException("Run the Purview connector under the Windows certificate-owning account.");
+        var publishBootstrapCatalog = args.Length == 7 && args[0] == "--publish-bootstrap";
+        var offset = publishBootstrapCatalog ? 1 : 0;
+        if ((!publishBootstrapCatalog && args.Length != 5) || (publishBootstrapCatalog && args.Length != 7))
+            throw new ArgumentException(
+                "Usage: CatalogHost [--publish-bootstrap] <bootstrap-identity.json> <snapshot-directory> <connector-queue> <assignment-queue> <transport-key> [<verified-catalog.json>]");
+
+        var identityPath = Path.GetFullPath(args[offset]);
+        var destination = Path.GetFullPath(args[offset + 1]);
+        var connectorDirectory = Path.GetFullPath(args[offset + 2]);
+        var assignmentDirectory = Path.GetFullPath(args[offset + 3]);
+        var authenticationKey = (await File.ReadAllTextAsync(Path.GetFullPath(args[offset + 4]))).Trim();
+        // Bootstrap owns a richer identity document than this process needs. Keep the
+        // connector wire protocol strict while accepting those explicitly managed
+        // bootstrap fields here.
+        var identityJson = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = false
+        };
+        var identity = JsonSerializer.Deserialize<CatalogHostIdentity>(
+            await File.ReadAllTextAsync(identityPath),
+            identityJson) ?? throw new InvalidOperationException("Missing Purview connector identity.");
+        if (!identity.AccessVerified || identity.TenantId == Guid.Empty || identity.ApplicationId == Guid.Empty ||
+            identity.ConnectorInstanceId == Guid.Empty || string.IsNullOrWhiteSpace(identity.Organization) ||
+            identity.CertificateThumbprint.Length != 40 || !identity.CertificateThumbprint.All(char.IsAsciiHexDigit))
+            throw new InvalidOperationException("Bootstrap must verify the dedicated Purview connector identity first.");
+
+        Directory.CreateDirectory(destination);
+        Directory.CreateDirectory(connectorDirectory);
+        Directory.CreateDirectory(assignmentDirectory);
+        using var ownershipLock = new FileStream(
+            Path.Combine(destination, "publisher.lock"),
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+        store.Open(OpenFlags.ReadOnly);
+        var matches = store.Certificates.Find(
+            X509FindType.FindByThumbprint,
+            identity.CertificateThumbprint,
+            validOnly: false);
+        if (matches.Count != 1 || !matches[0].HasPrivateKey)
+            throw new InvalidOperationException("Exact bootstrap certificate unavailable.");
+        using var certificate = matches[0];
+
+        // Public trust material is pinned independently by bootstrap. The private key
+        // remains in this Windows user's certificate store.
+        await PurviewConnectorProtocol.WriteAtomicAsync(
+            Path.Combine(destination, "publisher-public-certificate.txt"),
+            Convert.ToBase64String(certificate.RawData),
+            CancellationToken.None);
+
+        if (publishBootstrapCatalog)
+        {
+            var catalog = JsonSerializer.Deserialize<PurviewPolicyCatalog>(
+                await File.ReadAllTextAsync(Path.GetFullPath(args[offset + 5])),
+                PurviewConnectorProtocol.Json) ?? throw new InvalidOperationException("Missing verified bootstrap catalog.");
+            PurviewPolicyCatalogValidation.Validate(catalog, identity.TenantId);
+            await PurviewCompatibilityCatalogPublisher.PublishAsync(
+                destination,
+                catalog,
+                certificate,
+                CancellationToken.None);
+            return;
+        }
+
+        using var shutdown = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            shutdown.Cancel();
+        };
+
+        var executor = new PowerShellPurviewCatalogHostExecutor(
+            identity,
+            Path.Combine(AppContext.BaseDirectory, "Read-Catalog.ps1"));
+        var listener = new PurviewCatalogHostListener(
+            identity,
+            connectorDirectory,
+            assignmentDirectory,
+            authenticationKey,
+            executor,
+            (catalog, cancellationToken) => PurviewCompatibilityCatalogPublisher.PublishAsync(
+                destination,
+                catalog,
+                certificate,
+                cancellationToken));
+        await listener.RunAsync(shutdown.Token);
+    }
 }
-sealed record HostRead(PurviewPolicyCatalog Catalog, AssignmentRead? Assignment);
-sealed record AssignmentRead(bool Assigned, string? Revision, string? FailureCode);
-sealed record Identity(Guid TenantId, Guid ApplicationId, string Organization, string CertificateThumbprint, bool AccessVerified);

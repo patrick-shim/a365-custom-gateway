@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Api.Infrastructure;
 
-public sealed class AgentPolicyBindings(GatewayDbContext db, IPurviewPolicyCatalogClient catalog,
+public sealed class AgentPolicyBindings(GatewayDbContext db,
     IOptions<RuntimePurviewCatalogOptions> options) : IAgentPolicyBindingReader
 {
     public async Task<AgentPolicyBinding?> ReadAsync(AgentRegistration agent, CancellationToken ct)
@@ -20,19 +20,25 @@ public sealed class AgentPolicyBindings(GatewayDbContext db, IPurviewPolicyCatal
         var selected = rows.GroupBy(x => x.PolicyId).Select(g => g.OrderByDescending(x => x.ConfirmedAtUtc).First()).OrderBy(x => x.PolicyId).ToArray();
         if (selected.Length == 0 || selected.Any(x => x.TenantId != options.Value.TenantId || x.Status != "Assigned" ||
             x.AgentIdentityId != child || x.BlueprintId != blueprint || x.AssignedAtUtc is null)) return null;
-        try
+        foreach (var row in selected)
         {
-            var snapshot = await catalog.ReadAsync(options.Value.TenantId, ct);
-            foreach (var row in selected)
-            {
-                var policy = snapshot.Items.SingleOrDefault(x => x.Id == row.PolicyId);
-                if (policy is null || policy.Revision != row.AssignedRevision || PurviewPolicyCatalogValidation.Incompatibility(policy) is not null ||
-                    policy.AllAccountsApplicationIds?.Contains(child) != true) return null;
-            }
-            return new(PolicyAssignmentProtocol.Digest(selected.Select(x => new { x.Id, x.PolicyId, x.AssignedRevision, x.AgentIdentityId })),
-                snapshot.RetrievedAtUtc.Add(PurviewPolicyCatalogValidation.MaximumAge).UtcDateTime);
+            if (string.IsNullOrWhiteSpace(row.AssignedRevision) || row.AssignedRevision.Length != 64 ||
+                !row.AssignedRevision.All(char.IsAsciiHexDigitLower))
+                return null;
         }
-        catch (PurviewPolicyException) { return null; }
+
+        // Runtime Graph scope computation and processContent provide current
+        // fail-closed enforcement. The management catalog is operator inventory,
+        // so its age must not silently disable an otherwise confirmed assignment.
+        return new(PolicyAssignmentProtocol.Digest(selected.Select(x => new
+        {
+            x.Id,
+            x.PolicyId,
+            x.AssignedRevision,
+            x.AgentIdentityId,
+            x.BlueprintId,
+            x.AssignedAtUtc
+        })));
     }
 }
 

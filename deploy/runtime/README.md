@@ -17,11 +17,21 @@ docker compose --env-file deploy/runtime/.env.runtime -f deploy/runtime/docker-c
 
 Keep the configured Compose project name stable. Changing it creates a different stack and different named volumes. Default Console/API ports are 5081/5080 on loopback. The Console links to the [API reference](http://127.0.0.1:5081/docs).
 
+Compose dependency health gates order a normal `up`, while Docker engine restore
+may restart existing containers independently. The API and worker therefore retry
+transient PostgreSQL startup/recovery failures for a bounded period. Use the API
+health and readiness endpoints to assess service state; container `Up` status
+alone does not prove that the API is listening.
+
 This is a development topology with development service credentials. Vault runs
 in development mode but is not wired into the application; bootstrap currently
 writes ignored host secret files and generated Compose environment values.
 Production deployments require TLS, a secured durable secret provider and
 infrastructure configuration appropriate to their environment. The Windows
-Purview certificate host is managed by bootstrap, outside Compose.
+Purview connector listener is managed by bootstrap, outside Compose. The API
+mounts its authenticated connector/assignment transports, but PostgreSQL owns
+accepted connection operations and catalog snapshots. The listener is started by
+a logon-only task and contacts Purview only for explicit Connect, Policy Refresh,
+or assignment work; it has no periodic catalog trigger.
 
 For local API debugging, `dotnet run --project src/Gateway.Api --launch-profile runtime` loads `appsettings.Runtime.json`; supply the deployment-specific identity and provider settings securely. Avoid running a second debugging worker against the active deployment's queue. See [validation](../../tests/README.md) for isolated database and broker tests.

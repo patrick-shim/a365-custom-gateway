@@ -51,7 +51,7 @@ export function AgentCredentials({ agentId, externalAgentId }: { agentId: string
       {error !== undefined && <ErrorState title="Credential action was not confirmed" error={error} />}
       {uncertain && <Body1>An issuance may have completed without returning its key. Review the key list and revoke the unreceived key before creating another replacement.</Body1>}
       {credentials.isPending ? <Spinner label="Loading keys" /> : credentials.isError ? (
-        <ErrorState error={credentials.error} onRetry={() => void credentials.refetch()} />
+        <ErrorState error={credentials.error} onRetry={() => credentials.refetch()} />
       ) : (
         <>
           <Text weight="semibold">Issued keys</Text>

@@ -16,9 +16,90 @@ Each agent separates Prompt Shields, Data protection, Identity, API key and Acti
 
 Show server-confirmed state. Registration progress polls the authoritative operation and stops animating when administrator confirmation is required. Protection changes display a saving state; concurrent changes require refresh and a renewed review.
 
+An initial read uses a clear loading state. A background refresh keeps the last
+confirmed content visible and adds a compact animated “Refreshing” indicator.
+Buttons name the active action, prevent duplicate submission, and return to their
+normal label at a terminal outcome. Success, warning, blocked, and failure states
+use consistent Fluent colors and icons while retaining explicit text for color-
+independent meaning.
+
+Errors distinguish expired sign-in, missing permission, stale/conflicting state,
+temporary gateway availability, and unconfirmed mutation outcome. The primary
+message says what happened; a short recovery line says what the operator can do.
+Technical codes and correlation references remain collapsed under Details. Raw
+provider responses, prompts, tokens, and credentials never appear.
+
+Registration validates the external agent ID's 3–128 character domain constraint
+before leaving the first step and shows the constraint beside the field. Registry
+confirmation finishes within the Console request window. When Microsoft throttles
+or delays exact-ID readback, the Console identifies the outcome as unconfirmed,
+stops active animation, and directs the administrator to refresh and reconcile
+the existing operation after waiting; it never claims that creation completed.
+
 Policy assignment distinguishes applying, assigned/awaiting verification, current allow/block observations, failure and unavailable status. Applying assignment displays elapsed time and last successful status readback. Stop indicating active progress when status cannot be read. A write or elapsed time alone does not establish synchronized enforcement. Cached data must not conceal a failed catalog refresh.
 
 API keys are visible once and are not retained in query caches. Role-aware controls supplement server authorization. Search cursors and operation identifiers come from the server. Failed or uncertain mutations must not display fabricated success.
+
+## Purview connection and Policy Refresh
+
+The Settings / Purview page reads the local connection record and exposes
+the six server states: `NotConfigured`, `Connecting`, `Connected`, `Refreshing`,
+`Degraded`, and `Disconnected`. It maps them to **Connect to Purview**, in-progress
+feedback, **Policy Refresh**, **Retry Policy Refresh**, or **Reconnect**. Connect
+requires an explicit confirmation and uses only the identity, certificate,
+permissions, and listener installed by bootstrap.
+
+The page shows manual mode, tenant, local connector profile and instance,
+heartbeat, last attempt, last success, catalog retrieval age and verification,
+compatible/incompatible counts, failure code, and correlation reference. **Check
+status**, its 60-second local status refresh, page load, focus, and browser reload
+only read PostgreSQL state; they never submit provider work.
+
+Six missed five-second authenticated heartbeats make listener readiness stale.
+The server reports `Degraded` while retaining an accepted catalog, or
+`Disconnected` when none exists. Heartbeat recovery restores only this
+liveness-induced state and does not retrieve policy content.
+
+Connect and Policy Refresh return an accepted durable operation. The Console does
+not call that completion. It polls the same operation about every three seconds,
+replaces the existing progress state, and stops for `Succeeded`, `Failed`,
+`NeedsAttention`, `TimedOut`, or `Cancelled`, or when operation status cannot be
+read. An unchanged live response remains valid progress evidence because a provider
+read can take several minutes; the Console continues polling while the API returns
+`Pending` or `Running` with polling recommended. The server operation deadline
+bounds the wait. A read error stops active animation and offers **Check operation
+status**. Duplicate mutation controls remain disabled while a submission or live
+operation is active.
+
+The action remains disabled while the API performs any bounded local contention
+retry. If the API cannot accept the operation, the Console shows its sanitized
+problem and correlation reference, then rereads authoritative connection state
+without claiming that a refresh started.
+
+A failed refresh preserves the previous verified catalog and labels the connection
+Degraded; the UI explains that management failure alone does not prove configured
+agents lost runtime protection. Policy and agent pages reload the saved accepted
+catalog and link to Policy Refresh rather than implying that local reload contacts
+Purview. Catalog age alone does not label a durable assignment unavailable.
+
+The prior accepted catalog is view-only while the connection is `Connecting`,
+`Refreshing`, `Degraded`, or `Disconnected`, or while its retrieval timestamp is
+outside the thirty-day management freshness limit. Agent assignment selection
+and review are disabled with plain-language guidance in those states. When an open
+agent page observes a newer accepted catalog revision, it replaces the saved view,
+clears an obsolete stale-inventory review error, and enables review only if the new
+snapshot is verified, connected, and fresh.
+
+Thirty seconds without an authenticated listener heartbeat is a local management-
+readiness failure. The page shows `Degraded` and retains the dated accepted catalog
+when one exists, or `Disconnected` when none exists, with
+`PURVIEW_CONNECTOR_UNAVAILABLE` repair guidance. A later authenticated heartbeat
+restores only this liveness-induced state and does not start a policy refresh.
+
+Assignment status includes `NeedsAttention`. A refresh-proven removed, revised,
+incompatible, or no-longer-targeted policy is shown as requiring review and cannot
+be presented as a current binding. Assignment completion and runtime allow/block
+evidence remain separate.
 
 ## Theme, motion and accessibility
 

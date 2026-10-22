@@ -3,6 +3,12 @@
 Product boundary: policy owners author in Purview; gateway administrators select
 existing compatible policies and assign individual agent identities.
 
+Policy owners can author a new policy with the independent
+[local PowerShell utility](../../tools/scripts/setup/purview-agent-dlp.md).
+It targets one verified individual Entra agent using existing SITs; it is not
+called by Gateway, Console, bootstrap, or the catalog host. Gateway discovery and
+reviewed assignment still follow the existing path after authoring.
+
 ## Console structure
 
 - Agents: registration and details; separate Prompt Shields, Data protection,
@@ -47,9 +53,9 @@ No bootstrap surface creates classifiers, sensitive information types, DLP rules
 or DLP policies. Existing-policy selection and exact per-agent assignment remain
 Console operations after tenant setup succeeds.
 
-Move tenant integration setup and initial verification into bootstrap. Keep
-connection diagnostics under Settings; routine agent administration should not
-require manually refreshing a connection every 15 minutes.
+Tenant integration setup and initial verification belong in bootstrap. Settings
+provides persisted connection diagnostics plus explicit Connect and Policy Refresh
+operations; ordinary page use never starts a provider read.
 
 There are two independent permission paths:
 
@@ -70,24 +76,27 @@ remove existing readiness gates without replacing their protections.
 
 ### Runtime implementation
 
-The source includes a read-only catalog API and certificate publisher that read
-existing DLP policies and application rules from Purview. Catalog validation
-requires the exact tenant, a bounded complete list, unique IDs, definition
-revisions, and a snapshot no older than five minutes. A compatible candidate
-requires enabled Application-plane upload-text blocking; compatibility alone is
-not assignment or enforcement proof. Read-only catalog authorization is separate
-from mutation authorization.
+The read-only catalog API returns the latest connector snapshot accepted into
+PostgreSQL. Catalog validation requires the exact tenant, connector and operation
+provenance, monotonic generation, canonical hash, a bounded complete list, unique
+IDs, and definition revisions. A compatible candidate requires enabled
+Application-plane upload-text blocking; compatibility alone is not assignment or
+enforcement proof.
 
-The runtime deployment now uses a C# Windows catalog publisher. It connects with
-the dedicated certificate, validates the actual connected tenant, reads policies,
-and signs the bounded catalog with a domain-separated RSA signature. The API reads
-an atomic snapshot through a read-only shared directory, pins the public certificate
-from bootstrap configuration, and rejects tampering, wrong tenants, expired
-certificates, and stale data. Failed refreshes do not publish successful empty data.
-No management private key or administrator token is copied to the Linux API.
-This is the local Compose transport. Bootstrap currently installs a bounded
-Windows scheduled task under the certificate-owning account; a service-managed
-or cloud connector lifecycle and managed shared storage remain deferred work.
+The runtime deployment uses a C# Windows connector listener. It connects with the
+dedicated certificate only for an authenticated, expiring Connect, Policy Refresh,
+or assignment command, validates the actual connected tenant, and returns an
+HMAC-authenticated bounded result. The API validates that result before persisting
+a snapshot. Policy GET and assignment review read the accepted database snapshot,
+not a mutable transport file. Failed refreshes preserve the previous snapshot and
+never publish successful empty data. No management private key or administrator
+token is copied to the Linux API.
+
+Bootstrap starts the listener through a logon-only task under the certificate-
+owning account. Idle heartbeat and local polling, page/GET access, elapsed time,
+and API, Docker, or listener restart do not create a provider read. Restart
+recovery may resume an already accepted, unexpired operation. A service-managed or
+cloud connector lifecycle and managed shared storage are M6 and remain on hold.
 
 The runtime bootstrap provisions a separate management application and a Windows
 certificate, then verifies unattended access through a dedicated DLP role group.
@@ -118,10 +127,19 @@ A policy change requires a new review; the gateway fails closed in the meantime.
 
 Runtime uses the exact child's FMI token and application location. Scope caches
 include the child, user, and blueprint; Graph and OTel token caches are separate.
-The readiness path uses confirmed assignment plus the current signed policy
-snapshot. It does not substitute catalog compatibility for runtime certification. Each prompt must still receive an inline Purview verdict.
+The readiness path uses durable confirmed assignment evidence independently of
+display-catalog age. It does not substitute catalog compatibility for runtime
+certification. Each prompt must still receive an inline Purview verdict.
 Receipts bind the agent protection revision and individual assignment evidence;
-changed/expired evidence prevents issuance and consumption.
+changed evidence prevents issuance and consumption.
+
+Binding identity and catalog freshness are intentionally separate. The receipt
+hash includes the canonical durable assignment digest and excludes snapshot
+retrieval and acceptance times. An identical refresh therefore does not reject an
+in-flight receipt. A successful refresh that discovers a removed, changed,
+incompatible, or no-longer-targeted assigned policy marks that assignment
+`NeedsAttention`, advances only the affected agent's protection revision, and
+invalidates its prior evidence. Missing live runtime proof still fails closed.
 
 The Console shows Applying assignment, Assigned/awaiting gateway verification,
 Gateway allow and block verified, and Assignment not confirmed separately. The
@@ -137,7 +155,22 @@ to one selected policy when other policies may also apply.
 4. Test a same-blueprint sibling with the same user and input. Check its own protection scope as well as the policy's locations; other applicable policies can affect its result.
 5. Check ingestion and destination visibility independently. A local allow/block observation does not prove telemetry delivery.
 
-## References
+## Manual refresh and assignment reconciliation
+
+The [implemented local design](../spec/purview-connector-vnext.md) separates the
+displayed catalog, management mutation freshness, durable assignment evidence, and
+live Graph evaluation. An aged snapshot remains visibly dated inventory but
+cannot authorize a new review or confirmation; the Console directs the operator
+to Policy Refresh. A refresh failure retains that snapshot and reports Degraded.
+
+When an accepted refresh changes a confirmed assignment's canonical policy
+revision, compatibility, or exact individual target, or removes the policy, the
+Gateway records `NeedsAttention` and prevents that stale assignment evidence from
+remaining current. This local behavior is covered by repository regression tests;
+live tenant propagation, allow/block, and sibling isolation remain explicitly
+gated operator validation rather than a documentation claim.
+
+## Provider references
 
 * [Graph processContent](https://learn.microsoft.com/en-us/graph/api/userdatasecurityandgovernance-processcontent?view=graph-rest-1.0)
 * [Set-DlpCompliancePolicy Locations](https://learn.microsoft.com/en-us/powershell/module/exchangepowershell/set-dlpcompliancepolicy?view=exchange-ps#-locations)

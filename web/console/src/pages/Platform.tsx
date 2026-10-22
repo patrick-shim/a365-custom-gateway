@@ -37,14 +37,14 @@ export function Platform() {
       <Card style={{ marginBottom: 16 }}>
         <Text weight="semibold">Gateway API</Text>
         {health.isPending ? <Spinner size="small" label="Checking API" /> : health.isError ? (
-          <ErrorState error={health.error} onRetry={() => void health.refetch()} />
+          <ErrorState error={health.error} onRetry={() => health.refetch()} />
         ) : <StatusPill value={health.data} />}
         <Caption1>This check does not report worker health or delivery to Agent 365.</Caption1>
       </Card>
       <Card style={{ marginBottom: 16 }}>
         <Text weight="semibold">Registration defaults</Text>
         {config.isPending ? <Spinner size="small" label="Loading defaults" /> : config.isError ? (
-          <ErrorState error={config.error} onRetry={() => void config.refetch()} />
+          <ErrorState error={config.error} onRetry={() => config.refetch()} />
         ) : (
           <>
             <Body1>Registration environment: {config.data.registrationDefaults.environment}</Body1>

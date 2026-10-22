@@ -4,7 +4,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run check:reachability && npm test -- --reporter=dot && npm run build
+# Fluent UI's global focus manager is shared inside jsdom. Run files serially so
+# image builds do not intermittently race while dialogs mount and unmount.
+RUN npm run check:reachability \
+    && npm test -- --reporter=dot --maxWorkers=1 --minWorkers=1 --testTimeout=15000 \
+    && npm run build
 
 FROM nginx:1.27-alpine AS final
 ARG SOURCE_REVISION=unknown

@@ -60,4 +60,107 @@ $module = Get-Module RuntimePurview
     } catch { if ($_.Exception.Message -ne 'The dedicated Purview role group has unexpected members.') { throw } }
     if ($script:mutationCount -ne 0 -or $script:disconnects -ne 3) { throw 'Reconciliation changed a provider object or leaked a connection.' }
 }
-'Runtime Purview tenant, exact role/member boundary and reconciliation checks passed (no network).'
+
+& $module {
+    $script:testRoot = Join-Path ([IO.Path]::GetTempPath()) ('a365gw-purview-task-' + [guid]::NewGuid().ToString('N'))
+    $script:registeredTask = $null
+    $script:startedTask = $null
+    $script:publishCalls = 0
+    $script:dotnetPublishCalls = 0
+    $script:triggerCalls = 0
+    function script:Get-RepositoryRoot { $script:testRoot }
+    function script:Get-ScheduledTask { return $null }
+    function script:Invoke-BootstrapCommand {
+        param([string]$FilePath, [object[]]$ArgumentList)
+        if ($FilePath -ne 'dotnet') { throw "Unexpected bootstrap command: $FilePath" }
+        if ($ArgumentList[0] -eq 'publish') { $script:dotnetPublishCalls++; return '' }
+        if ([IO.Path]::GetFileName([string]$ArgumentList[0]) -eq 'Gateway.Purview.CatalogHost.dll') {
+            if ($ArgumentList.Count -ne 8 -or $ArgumentList[1] -ne '--publish-bootstrap') {
+                throw 'Bootstrap catalog publication did not use the synchronous managed assembly mode.'
+            }
+            $script:publishCalls++
+            return ''
+        }
+        throw "Unexpected dotnet command: $($ArgumentList -join ' ')"
+    }
+    function script:New-ScheduledTaskAction {
+        param([string]$Execute, [string]$Argument, [string]$WorkingDirectory)
+        [pscustomobject]@{ Execute=$Execute; Arguments=$Argument; WorkingDirectory=$WorkingDirectory }
+    }
+    function script:New-ScheduledTaskTrigger {
+        param([switch]$AtLogOn, [string]$User)
+        if (-not $AtLogOn -or [string]::IsNullOrWhiteSpace($User)) { throw 'Only a logon listener trigger is allowed.' }
+        $script:triggerCalls++
+        [pscustomobject]@{ AtLogOn=$true; User=$User }
+    }
+    function script:New-ScheduledTaskPrincipal {
+        param([string]$UserId, [string]$LogonType, [string]$RunLevel)
+        [pscustomobject]@{ UserId=$UserId; LogonType=$LogonType; RunLevel=$RunLevel }
+    }
+    function script:New-ScheduledTaskSettingsSet {
+        param(
+            [switch]$StartWhenAvailable,
+            [switch]$AllowStartIfOnBatteries,
+            [switch]$DontStopIfGoingOnBatteries,
+            [TimeSpan]$ExecutionTimeLimit,
+            [string]$MultipleInstances,
+            [int]$RestartCount,
+            [TimeSpan]$RestartInterval)
+        [pscustomobject]@{
+            StartWhenAvailable=$StartWhenAvailable; ExecutionTimeLimit=$ExecutionTimeLimit
+            MultipleInstances=$MultipleInstances; RestartCount=$RestartCount; RestartInterval=$RestartInterval
+        }
+    }
+    function script:Register-ScheduledTask {
+        param(
+            [string]$TaskName, $Action, $Trigger, $Principal, $Settings,
+            [string]$Description, [switch]$Force)
+        $script:registeredTask = [pscustomobject]@{
+            TaskName=$TaskName; Action=$Action; Trigger=@($Trigger); Principal=$Principal
+            Settings=$Settings; Description=$Description; Force=$Force
+        }
+    }
+    function script:Start-ScheduledTask { param([string]$TaskName) $script:startedTask = $TaskName }
+
+    try {
+        $identity = [ordered]@{
+            tenantId=[guid]::NewGuid().ToString('D'); applicationId=[guid]::NewGuid().ToString('D')
+            organization='example.onmicrosoft.com'; certificateThumbprint=('A' * 40); accessVerified=$true
+        }
+        $catalog = [ordered]@{ tenantId=$identity.tenantId; retrievedAtUtc=[DateTimeOffset]::UtcNow.ToString('O'); items=@() }
+        $result = Start-RuntimePurviewCatalogHost -Identity $identity -InitialCatalog $catalog
+        if ($script:dotnetPublishCalls -ne 1 -or $script:publishCalls -ne 1) { throw 'Listener setup did not build once and synchronously publish exactly one already-verified bootstrap catalog.' }
+        if ($script:triggerCalls -ne 1 -or $null -eq $script:registeredTask -or
+            $script:registeredTask.Trigger.Count -ne 1 -or -not $script:registeredTask.Trigger[0].AtLogOn -or
+            $null -ne $script:registeredTask.Trigger[0].PSObject.Properties['Repetition']) {
+            throw 'Purview listener task must have exactly one logon trigger.'
+        }
+        if ([IO.Path]::GetFileName([string]$script:registeredTask.Action.Execute) -cne 'Gateway.Purview.CatalogHost.exe' -or
+            $script:registeredTask.Action.Arguments -match '--once|--publish-bootstrap|Repetition|Gateway\.Purview\.CatalogHost\.dll' -or
+            $script:registeredTask.Action.Arguments -notmatch [regex]::Escape('.bootstrap\purview-connector')) {
+            throw 'Purview listener action must use only the windowless apphost and include its connector queue.'
+        }
+        if ($script:registeredTask.Settings.ExecutionTimeLimit -ne [TimeSpan]::Zero -or
+            $script:registeredTask.Settings.MultipleInstances -ne 'IgnoreNew' -or
+            $script:registeredTask.Settings.RestartCount -ne 3) {
+            throw 'Purview listener lifetime or recovery settings are incorrect.'
+        }
+        if ($script:startedTask -ne $script:registeredTask.TaskName -or $result.mode -ne 'logon-listener' -or
+            [guid]$result.connectorInstanceId -eq [guid]::Empty -or $identity.connectorInstanceId -ne $result.connectorInstanceId) {
+            throw 'Purview listener identity or startup readback is incomplete.'
+        }
+        $keyPath = Join-Path $script:testRoot '.bootstrap/secrets/purview-assignment.key'
+        if ([Convert]::FromBase64String([IO.File]::ReadAllText($keyPath).Trim()).Length -ne 32) {
+            throw 'Purview connector transport key was not preserved as a 32-byte secret.'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $script:testRoot) { Remove-Item -LiteralPath $script:testRoot -Recurse -Force }
+    }
+}
+
+$catalogHostProject = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../src/Gateway.Purview.CatalogHost/Gateway.Purview.CatalogHost.csproj') -Raw
+if ($catalogHostProject -notmatch '<OutputType>WinExe</OutputType>' -or $catalogHostProject -match '<OutputType>Exe</OutputType>') {
+    throw 'Purview listener apphost must use the Windows GUI subsystem so Task Scheduler cannot open a console window.'
+}
+
+'Runtime Purview tenant, exact role/member boundary, logon-only listener, initial publication and reconciliation checks passed (no network).'

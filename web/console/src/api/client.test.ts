@@ -4,6 +4,7 @@ import { ApiError, readAuthorizationChallenge } from "./errors";
 import {
   agent, agentId, blueprints, features, mockServer,
   response, rowVersion, tenantId, operationId, registrationOperation, systemConfig, provisioningHistory,
+  purviewConnection,
 } from "../test/fixtures";
 
 vi.mock("../auth/msal", () => ({ getApiToken: vi.fn(async () => "test-token") }));
@@ -30,14 +31,77 @@ describe("Gateway wire contracts", () => {
     await expect(api.confirmAgentPolicy(agentId, operationId)).rejects.toMatchObject({ code: "INVALID_API_RESPONSE", outcomeUnknown: true });
     expect(server.requests).toHaveLength(2);
   });
-  it("rejects stale and wrong-tenant Purview catalog data", async () => {
-    const catalog = { tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [] };
+  it("keeps verified saved catalogs available regardless of age but rejects wrong-tenant or future evidence", async () => {
+    const catalog = { tenantId, source: "AcceptedPurviewConnectorSnapshot", retrievedAtUtc: new Date().toISOString(), items: [] };
     server.handlers.set("GET /api/v1/protection/purview/policies", () => catalog);
     expect((await api.listPurviewPolicies()).items).toEqual([]);
     server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ ...catalog, tenantId: operationId }));
     await expect(api.listPurviewPolicies()).rejects.toMatchObject({ code: "PURVIEW_POLICY_CATALOG_INVALID" });
     server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ ...catalog, retrievedAtUtc: new Date(Date.now() - 600_000).toISOString() }));
+    await expect(api.listPurviewPolicies()).resolves.toMatchObject({ items: [] });
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ ...catalog, retrievedAtUtc: new Date(Date.now() + 120_000).toISOString() }));
     await expect(api.listPurviewPolicies()).rejects.toMatchObject({ code: "PURVIEW_POLICY_CATALOG_INVALID" });
+  });
+
+  it("reads tenant-bound Purview connection state and rejects another tenant", async () => {
+    expect(await api.getPurviewConnection()).toEqual(purviewConnection);
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ ...purviewConnection, tenantId: operationId }));
+    await expect(api.getPurviewConnection()).rejects.toMatchObject({ code: "PURVIEW_CONNECTION_TENANT_MISMATCH" });
+  });
+
+  it("starts connection and refresh with exact concurrency and idempotency headers", async () => {
+    const connectKey = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const refreshKey = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const accepted = {
+      operationId, status: "Pending", connectionState: "Connecting", expiresAtUtc: "2099-01-01T00:00:00Z",
+    };
+    server.handlers.set("POST /api/v1/protection/purview/connection", () => response(accepted, 202));
+    server.handlers.set("POST /api/v1/protection/purview/connection/refresh", () => response({
+      ...accepted, connectionState: "Refreshing",
+    }, 202));
+
+    await api.startPurviewConnection("*", connectKey);
+    await api.refreshPurviewPolicies(rowVersion, refreshKey);
+
+    expect(server.requests[0]).toMatchObject({
+      method: "POST", path: "/api/v1/protection/purview/connection", body: { confirmConnection: true },
+    });
+    expect(server.requests[0].headers.get("If-Match")).toBe("*");
+    expect(server.requests[0].headers.get("Idempotency-Key")).toBe(connectKey);
+    expect(server.requests[1]).toMatchObject({
+      method: "POST", path: "/api/v1/protection/purview/connection/refresh", body: {},
+    });
+    expect(server.requests[1].headers.get("If-Match")).toBe(rowVersion);
+    expect(server.requests[1].headers.get("Idempotency-Key")).toBe(refreshKey);
+
+    server.handlers.set("POST /api/v1/protection/purview/connection", () => response({
+      ...accepted, status: "Succeeded", connectionState: "Connected",
+    }, 202));
+    await expect(api.startPurviewConnection("*", connectKey)).resolves.toMatchObject({
+      operationId, status: "Succeeded", connectionState: "Connected",
+    });
+  });
+
+  it("binds Purview operation readback to a connector operation without an agent", async () => {
+    const connectorOperation = {
+      ...registrationOperation,
+      agentId: null,
+      type: "RefreshCatalog",
+      status: "Running",
+      currentStep: "ReadCatalog",
+      percentComplete: 50,
+      startedAtUtc: "2026-10-22T10:00:00Z",
+      completedAtUtc: null,
+      pollingRecommended: true,
+      requiredAction: null,
+      agent365RegistrationCompletionAvailable: false,
+      targetKind: "PurviewConnector",
+      targetId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    };
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => connectorOperation);
+    expect(await api.getPurviewConnectorOperation(operationId)).toMatchObject({ agentId: null, type: "RefreshCatalog" });
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({ ...connectorOperation, agentId }));
+    await expect(api.getPurviewConnectorOperation(operationId)).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
   });
   it("reads wrapped blueprints and preserves application versus object IDs", async () => {
     const result = await api.listBlueprints();

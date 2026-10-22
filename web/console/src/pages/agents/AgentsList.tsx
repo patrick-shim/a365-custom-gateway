@@ -11,6 +11,7 @@ import { blueprintName, formatTime, shieldLabel } from "../../api/display";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusPill } from "../../components/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
+import { RefreshIndicator } from "../../components/RefreshIndicator";
 
 export function AgentsList() {
   const [testing, setTesting] = useState<{agentId:string;name:string;externalAgentId:string;status:string}|null>(null);
@@ -28,10 +29,11 @@ export function AgentsList() {
       <PageHeader title="Agents" subtitle="Each registration has its own identity and Gateway key."
         actions={<Button appearance="primary" onClick={() => navigate("/register")}>Register agent</Button>} />
       {agents.isPending ? <Spinner label="Loading agents" /> : agents.isError ? (
-        <ErrorState error={agents.error} onRetry={() => void agents.refetch()} />
+        <ErrorState error={agents.error} onRetry={() => agents.refetch()} />
       ) : items.length === 0 ? <Body1>No agents registered yet.</Body1> : (
         <>
-          {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => void blueprints.refetch()} />}
+          <RefreshIndicator active={agents.isFetching && !agents.isFetchingNextPage} label="Refreshing agents" />
+          {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => blueprints.refetch()} />}
           <div style={{ overflowX: "auto" }}>
             <Table aria-label="Agents">
               <TableHeader><TableRow>
@@ -60,7 +62,8 @@ export function AgentsList() {
             </Table>
           </div>
           {agents.hasNextPage && <Button style={{ marginTop: 16 }} disabled={agents.isFetchingNextPage}
-            onClick={() => void agents.fetchNextPage()}>{agents.isFetchingNextPage ? "Loading..." : "Load more agents"}</Button>}
+            icon={agents.isFetchingNextPage ? <Spinner size="tiny" /> : undefined}
+            onClick={() => void agents.fetchNextPage()}>{agents.isFetchingNextPage ? "Loading more agents…" : "Load more agents"}</Button>}
         </>
       )}
       {testing && <AgentTestPanel key={testing.agentId} agent={testing} onClose={() => setTesting(null)} />}

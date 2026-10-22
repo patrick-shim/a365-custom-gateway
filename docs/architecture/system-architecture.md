@@ -9,8 +9,9 @@ and apply them to the exact individual agent identity, preserving all unrelated
 targets and exclusions. Never silently broaden an agent choice to its blueprint.
 
 Console structure: Data protection → Policies; each agent has a Data protection
-tab; Settings contains Gateway settings and Purview connection diagnostics.
-Tenant setup and first access verification belong in bootstrap. Management
+tab; Settings contains Gateway settings and the persisted Purview connection,
+Connect, and Policy Refresh experience. Tenant provisioning and management-
+credential verification belong in bootstrap. Management
 PowerShell access and runtime Graph processContent permissions are separate.
 The gateway exposes prompts:evaluate and calls Purview; Purview does not call a
 gateway processContent endpoint. Classifier/policy-rule editing stays in Purview.
@@ -68,7 +69,7 @@ cloud-host deployment manifests are not implemented in this repository.
 | Entra ID / MSAL | Operator sign-in and API authorization |
 | Microsoft Graph + Agent 365 Registry | Identity blueprints, child Agent IDs, Registry |
 | Agent 365 observability | Default sanitized activity export |
-| Purview + runtime catalog host | Existing DLP policy discovery, exact agent assignment and runtime evidence |
+| Purview + runtime connector listener | Explicit existing-policy discovery, exact agent assignment and runtime evidence |
 | Prompt Shields | Pre-model prompt-attack evaluation |
 
 These are SaaS/API dependencies for the product's purpose. The current database,
@@ -93,9 +94,10 @@ flowchart LR
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
     Api --> Shield[Prompt Shields Microsoft content safety]
     Api --> Purview[Purview Graph runtime APIs]
-    Api -->|authenticated assignment files| Catalog[Windows Purview catalog host]
-    Catalog -->|signed catalog and assignment readback| Api
+    Api -->|authenticated refresh and assignment work| Catalog[Windows Purview connector listener]
+    Catalog -->|authenticated results and heartbeat| Api
     Catalog -->|Windows certificate store| Compliance[Security and Compliance PowerShell]
+    Api -->|accepted catalog and operations| Db
 ```
 
 ## Identity and authority
@@ -112,7 +114,7 @@ the Gateway key and external ID; they do not choose a cloud managed identity.
 | External agent | Gateway credential bound to one registration |
 | API to Prompt Shields | Workload credential to the configured provider |
 | Purview runtime | Individual agent token obtained through its own blueprint credential |
-| API to catalog host | Authenticated files bound to tenant, agent, policy and review |
+| API to connector listener | Authenticated files bound to tenant, connector, operation, generation, request, action, and deadline; assignment files additionally bind exact agent, policy, and review |
 | Catalog host to compliance | Dedicated certificate in the bootstrap account Windows certificate store |
 
 Gateway keys are ingress credentials. Clear value returned once; storage keeps a
@@ -135,7 +137,10 @@ The React installer and terminal share one configuration and execution engine.
 Known interrupted checkpoints are reconciled through exact ownership readback;
 Prompt Shields and Purview remain
 independently selectable. Initial connection settings and product provisioning
-belong in bootstrap; existing-policy selection belongs in the Console.
+belong in bootstrap; local connector verification, Policy Refresh, and existing-
+policy selection belong in the Console. Page/GET access and idle or restart
+recovery do not create a new provider operation; recovery may resume an already
+accepted, unexpired operation.
 
 Registration and protection remain separate lifecycles:
 
@@ -163,8 +168,9 @@ deliberately deleted environment by editing checkpoint fields.
 Registration creates the agent identity and Registry entry. Administrators select
 existing Purview policies separately on the agent's Data protection tab. Assignment
 targets the individual agent identity, never its blueprint. Policy definitions and
-classifiers are authored in Purview. Initial connection setup belongs in bootstrap;
-ongoing diagnostics belong in Settings.
+classifiers are authored in Purview. Initial tenant setup belongs in bootstrap;
+ongoing connector verification, manual refresh, and diagnostics belong in
+Settings.
 
 Only individual policy assignments are stored. Assignment, synchronization and verified
 enforcement remain distinct. See the [protection guide](protection-configuration.md).
@@ -189,6 +195,14 @@ use a transactional outbox. Logical queues remain:
 
 Transport is **RabbitMQ**; consumers stay duplicate-safe and recover
 uncertain provider outcomes by exact readback.
+
+The local Purview connector uses a separate authenticated filesystem transport
+because its certificate remains in the Windows user's certificate store. The API
+persists Connect/RefreshCatalog operations before publishing commands, accepts
+only exactly bound results, and stores verified catalog snapshots in PostgreSQL.
+The transport is not catalog authority and its accepted command/result files are
+removed only after an authenticated host checkpoint covers the durable terminal
+operation.
 
 Approved runtime sample tests keep ephemeral raw samples; durable operations keep
 consent hashes and sanitized outcomes.
@@ -216,7 +230,9 @@ prove downstream destination visibility.
   runtime configuration, or the Windows certificate store; they never belong in
   source control or application images. A production secret provider is deferred.
 - Safe RFC 9457 errors and correlation IDs.
-- Fail-closed enforcement when required provider proof is missing or stale.
+- Fail-closed enforcement when required runtime provider proof is missing or
+  invalid. An aged display catalog blocks new assignment review/confirmation but
+  does not by itself expire a durable confirmed binding.
 - The tested local baseline does not require Azure PaaS for its database, bus,
   object store or compute.
 

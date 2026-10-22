@@ -236,11 +236,24 @@ function Assert-RuntimePurviewSessionTenant {
 
 function Start-RuntimePurviewCatalogHost {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Identity)
+    param([Parameter(Mandatory)]$Identity, [Parameter(Mandatory)]$InitialCatalog)
     if (-not $IsWindows -or -not $Identity.accessVerified) { throw 'Verified Windows certificate access is required before starting catalog publication.' }
     $root = Get-RepositoryRoot
     $directory = Join-Path $root '.bootstrap/purview-catalog'
     [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $connector = Join-Path $root '.bootstrap/purview-connector'
+    [IO.Directory]::CreateDirectory($connector) | Out-Null
+    $connectorIdPath = Join-Path $connector 'connector-instance-id.txt'
+    if (-not (Test-Path -LiteralPath $connectorIdPath)) {
+        [IO.File]::WriteAllText($connectorIdPath, ([guid]::NewGuid().ToString('D')))
+    }
+    $connectorId = [guid]::Empty
+    if (-not [guid]::TryParse(([IO.File]::ReadAllText($connectorIdPath).Trim()), [ref]$connectorId) -or $connectorId -eq [guid]::Empty) {
+        throw 'The existing Purview connector instance identifier is invalid; restore it rather than replacing it implicitly.'
+    }
+    if ($Identity -is [Collections.IDictionary]) { $Identity.connectorInstanceId = $connectorId.ToString('D') }
+    elseif ($Identity.PSObject.Properties.Name -contains 'connectorInstanceId') { $Identity.connectorInstanceId = $connectorId.ToString('D') }
+    else { $Identity | Add-Member -NotePropertyName connectorInstanceId -NotePropertyValue $connectorId.ToString('D') }
     $identityPath = Join-Path $directory 'identity.json'
     [IO.File]::WriteAllText($identityPath, ($Identity | ConvertTo-Json -Depth 10))
     $queue = Join-Path $root '.bootstrap/purview-assignments'
@@ -253,13 +266,29 @@ function Start-RuntimePurviewCatalogHost {
     if ([Convert]::FromBase64String([IO.File]::ReadAllText($keyPath).Trim()).Length -ne 32) { throw 'Invalid assignment authentication key.' }
     $output = Join-Path $root '.bootstrap/tools/purview-catalog-host'
     $executable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
-    if (($identityPath + $directory + $queue + $keyPath) -match '["\r\n]') { throw 'Unsupported catalog host path.' }
-    # The certificate private key belongs to this Windows user. Run a bounded
-    # refresh at sign-in and every five minutes so Task Scheduler, rather than an
-    # immortal child process, owns restart and failure recovery.
+    if (($identityPath + $directory + $connector + $queue + $keyPath) -match '["\r\n]') { throw 'Unsupported catalog host path.' }
+    # The certificate private key belongs to this Windows user. Task Scheduler
+    # supervises one headless listener; idle startup and heartbeat do not contact
+    # Purview. Only authenticated connector or assignment work starts a bounded
+    # provider child process.
     $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $taskName = 'A365Gateway-Purview-' + ([string]$Identity.applicationId)
+    $legacyDescription = 'Refresh the gateway Purview catalog and process assignments using its current-user certificate.'
+    $listenerDescription = 'Run the gateway Purview connector listener using its current-user certificate.'
     $registered = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($registered) {
+        $actions = @($registered.Actions)
+        $expectedExecutable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
+        try {
+            $registeredSid = ([Security.Principal.NTAccount]$registered.Principal.UserId).Translate([Security.Principal.SecurityIdentifier]).Value
+        } catch { throw 'The existing Purview task principal could not be verified; refusing replacement.' }
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($actions.Count -ne 1 -or [IO.Path]::GetFullPath([string]$actions[0].Execute) -cne [IO.Path]::GetFullPath($expectedExecutable) -or
+            [IO.Path]::GetFullPath([string]$actions[0].WorkingDirectory) -cne [IO.Path]::GetFullPath($root) -or
+            $registeredSid -ne $currentSid -or [string]$registered.Description -cnotin @($legacyDescription, $listenerDescription)) {
+            throw 'The existing Purview task is not the exact owned catalog host; refusing replacement.'
+        }
+    }
     if ($registered -and $registered.State -eq 'Running') {
         Stop-ScheduledTask -TaskName $taskName
         $stopDeadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -267,7 +296,7 @@ function Start-RuntimePurviewCatalogHost {
             Start-Sleep -Milliseconds 100
             $registered = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         } while ($registered -and $registered.State -eq 'Running' -and [DateTime]::UtcNow -lt $stopDeadline)
-        if ($registered -and $registered.State -eq 'Running') { throw 'The previous Purview scheduled refresh did not stop.' }
+        if ($registered -and $registered.State -eq 'Running') { throw 'The previous Purview connector task did not stop.' }
     }
 
     # Migrate the former detached, long-running host only when its recorded
@@ -288,17 +317,32 @@ function Start-RuntimePurviewCatalogHost {
 
     Invoke-BootstrapCommand -FilePath 'dotnet' -ArgumentList @('publish', (Join-Path $root 'src/Gateway.Purview.CatalogHost'), '-c', 'Release', '-o', $output, '--nologo') | Out-Null
     $executable = Join-Path $output 'Gateway.Purview.CatalogHost.exe'
-    $arguments = @("`"$identityPath`"", "`"$directory`"", "`"$queue`"", "`"$keyPath`"", '--once')
+    $assembly = Join-Path $output 'Gateway.Purview.CatalogHost.dll'
+    $initialCatalogPath = Join-Path $directory ('bootstrap-catalog-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        [IO.File]::WriteAllText($initialCatalogPath, ($InitialCatalog | ConvertTo-Json -Depth 60 -Compress))
+        # The scheduled listener uses the windowless apphost. Run the bounded
+        # bootstrap publication through dotnet so setup waits for and observes
+        # the managed process exit code without launching a GUI-subsystem host.
+        Invoke-BootstrapCommand -FilePath 'dotnet' -ArgumentList @(
+            $assembly, '--publish-bootstrap', $identityPath, $directory, $connector, $queue, $keyPath, $initialCatalogPath
+        ) | Out-Null
+    } finally {
+        if (Test-Path -LiteralPath $initialCatalogPath) { [IO.File]::Delete($initialCatalogPath) }
+    }
+    $arguments = @("`"$identityPath`"", "`"$directory`"", "`"$connector`"", "`"$queue`"", "`"$keyPath`"")
     $action = New-ScheduledTaskAction -Execute $executable -Argument ($arguments -join ' ') -WorkingDirectory $root
     $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $account
-    $recoveryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5)
     $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 8) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logonTrigger, $recoveryTrigger) -Principal $principal -Settings $settings `
-        -Description 'Refresh the gateway Purview catalog and process assignments using its current-user certificate.' -Force | Out-Null
+        -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $logonTrigger -Principal $principal -Settings $settings `
+        -Description $listenerDescription -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
-    return [ordered]@{ taskName=$taskName; executable=$executable; snapshotDirectory=$directory; mode='scheduled-one-shot'; intervalMinutes=5 }
+    return [ordered]@{
+        taskName=$taskName; executable=$executable; snapshotDirectory=$directory
+        connectorDirectory=$connector; connectorInstanceId=$connectorId.ToString('D'); mode='logon-listener'
+    }
 }
 
 Export-ModuleMember -Function Ensure-RuntimePurviewManagementIdentity,Set-RuntimePurviewManagementRoleGroup,Test-RuntimePurviewManagementAccess,Start-RuntimePurviewCatalogHost,Assert-RuntimePurviewPrerequisites

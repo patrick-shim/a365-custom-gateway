@@ -1,9 +1,13 @@
 using Gateway.Contracts.Responses;
 using Gateway.Api.Authorization;
 using Gateway.Api.Extensions;
+using Gateway.Api.Infrastructure;
+using Gateway.Application.Exceptions;
+using Gateway.Contracts;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.Models;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Purview;
 using Microsoft.AspNetCore.Authorization;
@@ -16,8 +20,10 @@ namespace Gateway.Api.Controllers;
 [ApiController]
 [Route("api/v1/agents/{agentId:guid}/purview-policies")]
 [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
-public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurviewPolicyCatalogClient catalog,
-    IAgentPolicyBindingReader bindings, IOptions<RuntimePolicyAssignmentOptions> options) : ControllerBase
+public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurviewConnectorStore connectorStore,
+    IAgentPolicyBindingReader bindings,
+    IOptions<RuntimePolicyAssignmentOptions> assignmentOptions,
+    IOptions<PurviewConnectorOptions> connectorOptions) : ControllerBase
 {
     public sealed record Selection(Guid PolicyId, string Revision);
 
@@ -52,7 +58,7 @@ public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurvi
     public async Task<IActionResult> Review(Guid agentId, Selection selection, CancellationToken ct)
     {
         var actor = User.GetProtectionActor();
-        if (string.IsNullOrWhiteSpace(options.Value.AuthenticationKey) || string.IsNullOrWhiteSpace(options.Value.QueueDirectory))
+        if (string.IsNullOrWhiteSpace(assignmentOptions.Value.AuthenticationKey) || string.IsNullOrWhiteSpace(assignmentOptions.Value.QueueDirectory))
             return Problem("Run the Purview assignment setup during bootstrap.", statusCode: 503);
         var agent = await db.AgentRegistrations.Include(x => x.FeatureConfiguration).SingleOrDefaultAsync(x => x.Id == agentId && !x.IsDeleted, ct);
         if (agent is null) return NotFound();
@@ -61,7 +67,7 @@ public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurvi
             return Conflict(new { detail = "This agent requires its own active identity before assignment." });
         if (agent.FeatureConfiguration.PurviewEnabled && agent.PurviewPolicySelectionMode != "ExistingPolicy")
             return Conflict(new { detail = "Review the existing shared blueprint configuration before moving this agent to individual assignments." });
-        var snapshot = await catalog.ReadAsync(actor.TenantId, ct);
+        var snapshot = await ReadAcceptedCatalogAsync(actor.TenantId, ct);
         var policy = snapshot.Items.SingleOrDefault(x => x.Id == selection.PolicyId);
         if (policy is null || policy.Revision != selection.Revision || PurviewPolicyCatalogValidation.Incompatibility(policy) is not null)
             return Conflict(new { detail = "The policy changed or is incompatible. Refresh the catalog and review again." });
@@ -91,7 +97,7 @@ public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurvi
         if (row.ExpiresAtUtc <= DateTime.UtcNow || row.ReviewedProtectionRevision != agent.ProtectionRevision || agent.IsDeleted || agent.Status != AgentStatus.Active ||
             agent.Agent365AgentId != row.AgentIdentityId.ToString() || agent.BlueprintId != row.BlueprintId.ToString())
             return Conflict(new { detail = "The review expired or the agent changed. Review again." });
-        var snapshot = await catalog.ReadAsync(actor.TenantId, ct);
+        var snapshot = await ReadAcceptedCatalogAsync(actor.TenantId, ct);
         if (snapshot.Items.SingleOrDefault(x => x.Id == row.PolicyId)?.Revision != row.ReviewedRevision)
             return Conflict(new { detail = "The policy changed. Refresh and review again." });
         if (await db.AgentPolicyAssignments.AnyAsync(x => x.AgentRegistrationId == agentId && x.Status == "Pending", ct))
@@ -103,5 +109,40 @@ public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurvi
         agent.ProtectionRevision = Guid.NewGuid(); agent.UpdatedAtUtc = DateTime.UtcNow; agent.UpdatedByObjectId = actor.ObjectId;
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Accepted(new PolicyAssignmentConfirmationResponse(operationId, row.Status));
+    }
+
+    private async Task<PurviewPolicyCatalog> ReadAcceptedCatalogAsync(Guid tenantId, CancellationToken ct)
+    {
+        var connectorInstanceId = connectorOptions.Value.TenantId == tenantId
+            ? connectorOptions.Value.ConnectorInstanceId
+            : Guid.Empty;
+        if (connectorInstanceId == Guid.Empty)
+            throw new DomainException(
+                "The bootstrap-owned Purview connector is not configured for this tenant.",
+                ErrorCodes.PURVIEW_CONNECTOR_SETUP_REQUIRED);
+        var accepted = await connectorStore.GetAcceptedCatalogAsync(tenantId, connectorInstanceId, ct)
+            ?? throw new DomainException(
+                "Connect Purview and complete an authenticated policy refresh before changing assignments.",
+                ErrorCodes.PURVIEW_CONNECTOR_SETUP_REQUIRED);
+        PurviewPolicyCatalog catalog;
+        try
+        {
+            catalog = AcceptedPurviewCatalog.Deserialize(accepted, tenantId, connectorInstanceId);
+            PurviewPolicyCatalogValidation.EnsureFreshForManagement(catalog);
+        }
+        catch (PurviewPolicyException failure) when (
+            failure.FailureCode == "PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED")
+        {
+            throw new DomainException(
+                "Refresh the Purview policy catalog before reviewing or confirming this assignment.",
+                ErrorCodes.PURVIEW_INVENTORY_STALE);
+        }
+        catch (PurviewPolicyException)
+        {
+            throw new DomainException(
+                "The Gateway could not verify its accepted Purview policy catalog.",
+                ErrorCodes.PURVIEW_CONNECTOR_RESULT_INVALID);
+        }
+        return catalog;
     }
 }

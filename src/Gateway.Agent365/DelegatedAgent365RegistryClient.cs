@@ -23,9 +23,7 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         TimeSpan.FromSeconds(1),
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(4),
-        TimeSpan.FromSeconds(8),
-        TimeSpan.FromSeconds(12),
-        TimeSpan.FromSeconds(16)
+        TimeSpan.FromSeconds(8)
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -75,13 +73,20 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         var token = await GetTokenAsync(cancellationToken);
         var path = $"beta/copilot/agentRegistrations/{registrationId:D}";
         var deletionSent = false;
+        TimeSpan? providerRetryAfter = null;
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            if (attempt > 0)
+                await Task.Delay(MaxDelay(TimeSpan.FromSeconds(2), providerRetryAfter), cancellationToken);
             using var read = CreateRequest(HttpMethod.Get, path, token, null);
             using var response = await _httpClient.SendAsync(read, cancellationToken);
             if (response.StatusCode == HttpStatusCode.NotFound) return;
-            if (IsTransient(response.StatusCode)) continue;
+            if (IsTransient(response.StatusCode))
+            {
+                providerRetryAfter = ReadRetryAfter(response);
+                continue;
+            }
+            providerRetryAfter = null;
             if (response.StatusCode != HttpStatusCode.OK)
                 throw Failure(MapCreateFailureCode(response.StatusCode), "Microsoft did not authorize or accept Registry deletion verification.", attempt > 0);
             var record = await response.Content.ReadFromJsonAsync<DelegatedRegistryRecord>(JsonOptions, cancellationToken);
@@ -202,8 +207,10 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
                 mutationMayHaveOccurred: false);
         }
 
-        foreach (var delay in _verificationDelays)
+        TimeSpan? providerRetryAfter = null;
+        foreach (var scheduledDelay in _verificationDelays)
         {
+            var delay = MaxDelay(scheduledDelay, providerRetryAfter);
             if (delay > TimeSpan.Zero)
             {
                 try
@@ -224,7 +231,10 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
 
             var result = await TryReadAsync(registrationId, cancellationToken);
             if (result.Retry)
+            {
+                providerRetryAfter = result.RetryAfter;
                 continue;
+            }
 
             VerifyRecord(result.Record, registrationId, request);
             return;
@@ -276,8 +286,11 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
 
         using (response)
         {
-            if (response.StatusCode == HttpStatusCode.NotFound || IsTransient(response.StatusCode))
+            if (response.StatusCode == HttpStatusCode.NotFound)
                 return RegistryReadResult.Retryable();
+
+            if (IsTransient(response.StatusCode))
+                return RegistryReadResult.Retryable(ReadRetryAfter(response));
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
@@ -436,6 +449,31 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
             HttpStatusCode.TooManyRequests ||
         (int)statusCode >= 500;
 
+    private static TimeSpan MaxDelay(TimeSpan scheduled, TimeSpan? provider) =>
+        provider is { } requested && requested > scheduled ? requested : scheduled;
+
+    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+            return delta;
+
+        if (retryAfter?.Date is { } date)
+        {
+            var until = date - DateTimeOffset.UtcNow;
+            if (until > TimeSpan.Zero) return until;
+        }
+
+        if (response.Headers.TryGetValues("x-ms-retry-after-ms", out var values) &&
+            long.TryParse(values.FirstOrDefault(), out var milliseconds) &&
+            milliseconds > 0)
+        {
+            return TimeSpan.FromMilliseconds(milliseconds);
+        }
+
+        return null;
+    }
+
     private static string MapCreateFailureCode(HttpStatusCode statusCode) =>
         statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
             ? ErrorCodes.AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED
@@ -482,9 +520,14 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         public string? CreatedBy { get; init; }
     }
 
-    private sealed record RegistryReadResult(bool Retry, DelegatedRegistryRecord? Record)
+    private sealed record RegistryReadResult(
+        bool Retry,
+        DelegatedRegistryRecord? Record,
+        TimeSpan? RetryAfter)
     {
-        public static RegistryReadResult Retryable() => new(true, null);
-        public static RegistryReadResult Found(DelegatedRegistryRecord? record) => new(false, record);
+        public static RegistryReadResult Retryable(TimeSpan? retryAfter = null) =>
+            new(true, null, retryAfter);
+        public static RegistryReadResult Found(DelegatedRegistryRecord? record) =>
+            new(false, record, null);
     }
 }

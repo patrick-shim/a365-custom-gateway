@@ -11,8 +11,10 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
     {
         RuleFor(x => x.ExternalAgentId)
             .NotEmpty()
+            .MinimumLength(3)
             .MaximumLength(128)
-            .Matches(@"^[a-zA-Z0-9][a-zA-Z0-9._-]*$");
+            .Matches(@"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+            .WithMessage("ExternalAgentId must be 3-128 characters, start with a letter or number, and contain only letters, numbers, dots, hyphens, or underscores.");
 
         RuleFor(x => x.Name)
             .NotEmpty()

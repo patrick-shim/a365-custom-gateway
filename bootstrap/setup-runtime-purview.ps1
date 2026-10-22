@@ -59,6 +59,6 @@ try {
     $identity.policyCount = $verification.policyCount
     Save-Identity $identity
     [IO.File]::WriteAllText((Join-Path $directory 'purview-management-catalog.json'), ($verification.catalog | ConvertTo-Json -Depth 40))
-    if ($StartCatalogHost) { Start-RuntimePurviewCatalogHost -Identity $identity | Out-Null }
+    if ($StartCatalogHost) { Start-RuntimePurviewCatalogHost -Identity $identity -InitialCatalog $verification.catalog | Out-Null }
     $identity | ConvertTo-Json -Depth 10
 } finally { $lock.Dispose() }

@@ -904,6 +904,10 @@ function Write-GatewayRuntimeEnv {
         $assignmentKeyPath = Join-Path (Get-RepositoryRoot) '.bootstrap/secrets/purview-assignment.key'
         $lines.Add("RuntimePolicyAssignments__AuthenticationKey=$([IO.File]::ReadAllText($assignmentKeyPath).Trim())")
         $lines.Add('RuntimePolicyAssignments__QueueDirectory=/app/purview-assignments')
+        $lines.Add("PurviewConnector__AuthenticationKey=$([IO.File]::ReadAllText($assignmentKeyPath).Trim())")
+        $lines.Add('PurviewConnector__QueueDirectory=/app/purview-connector')
+        $lines.Add("PurviewConnector__TenantId=$($PurviewIdentity.tenantId)")
+        $lines.Add("PurviewConnector__ConnectorInstanceId=$($PurviewIdentity.connectorInstanceId)")
         $lines.Add('Purview__Enabled=true')
         $lines.Add('RuntimePurviewCatalog__Enabled=true')
         $lines.Add("RuntimePurviewCatalog__TenantId=$($PurviewIdentity.tenantId)")
@@ -1090,7 +1094,7 @@ function Invoke-GatewayRuntimeApplyWorkflow {
         $management.accessVerified=$true
         $management['verifiedAtUtc']=$verified.verifiedAtUtc
         $management['policyCount']=$verified.policyCount
-        Start-RuntimePurviewCatalogHost -Identity $management | Out-Null
+        Start-RuntimePurviewCatalogHost -Identity $management -InitialCatalog $verified.catalog | Out-Null
         $management
     } -Evidence { param($r) if ($null -eq $r) { @{enabled=$false;disposition='NotRequested'} } else {$r} }
     $images = Invoke-GatewaySetupStep -Name 'Local workload images' -Context $context -Action {

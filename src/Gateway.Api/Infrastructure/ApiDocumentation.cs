@@ -29,9 +29,12 @@ public static class ApiDocumentation
         ["Agents.RetryProvisioning"] = ("Retry eligible provisioning", "Retries only server-approved failed provisioning. Read the returned operation before deciding on another action."),
         ["Agents.GetAuditEvents"] = ("Read administrative audit events", "Returns the selected agent's administrative history, subject to caller authorization."),
         ["Agents.GetProvisioningHistory"] = ("Read provisioning history", "Returns operation history used to find authoritative setup status and outstanding actions."),
-        ["Operations.GetOperationStatus"] = ("Read provisioning operation status", "Poll this operation for authoritative stages, failure details and requested administrator actions. Do not infer completion from elapsed time."),
+        ["Operations.GetOperationStatus"] = ("Read asynchronous operation status", "Poll registration or Purview connector operations for authoritative stages, failure details and requested administrator actions. Do not infer completion from elapsed time."),
         ["Operations.CompleteAgent365Registration"] = ("Confirm Agent 365 Registry registration", "Requires a signed-in Gateway.Administrator with access_as_user and the API's delegated Graph Registry consent. Adds the existing agent to the Registry; it does not create another identity. Confirmation queues verification and is not an Active readback."),
-        ["PurviewPolicyCatalog.List"] = ("Read existing Purview policies", "Returns a fresh tenant-bound catalog and compatibility reasons. Failure returns 503 instead of a fabricated empty catalog. Policy definitions and classifiers are managed in Purview."),
+        ["PurviewConnection.Get"] = ("Read the local Purview connection state", "Reads durable connector, heartbeat and accepted-catalog status from the Gateway. Thirty seconds without an authenticated heartbeat reports degraded or disconnected local management readiness while retaining any accepted catalog. This endpoint never calls Purview or starts provider work."),
+        ["PurviewConnection.Connect"] = ("Verify the installed Purview connector", "Accepts an asynchronous, operation-bound connection verification. Requires explicit confirmation, Idempotency-Key and the exact If-Match row version. HTTP 202 means queued, not connected."),
+        ["PurviewConnection.Refresh"] = ("Refresh the Purview policy catalog", "Queues one authenticated catalog refresh through the installed connector. Requires Idempotency-Key and the exact If-Match row version. HTTP 202 is not proof of refresh success; poll the returned operation."),
+        ["PurviewPolicyCatalog.List"] = ("Read existing Purview policies", "Returns the latest authenticated catalog accepted into authoritative Gateway persistence and compatibility reasons. Failure returns 503 instead of a fabricated empty catalog. Policy definitions and classifiers are managed in Purview."),
         ["AgentPolicyAssignments.List"] = ("Read individual-agent policy assignments", "Reports assignment states, binding freshness and observed allow/block timestamps. Assigned, synchronized and verified enforcement are distinct. A block does not identify which applicable policy caused it."),
         ["AgentPolicyAssignments.Review"] = ("Review an individual-agent assignment", "Binds a compatible policy revision, administrator and exact agent identity to a short-lived review. No policy write occurs until confirmation. Use policyId and revision from the current catalog."),
         ["AgentPolicyAssignments.Confirm"] = ("Confirm a reviewed policy assignment", "Queues the reviewed assignment for this individual identity. Preserves unrelated targets, exclusions, rules and mode. Returns 202 for new work or 200 for an already confirmed operation. Poll assignments for confirmation; requests fail closed while required protection is unavailable."),
@@ -62,6 +65,18 @@ public static class ApiDocumentation
             var id = $"{action.ControllerName}.{action.ActionName}";
             operation.OperationId = id;
             if (Operations.TryGetValue(id, out var text)) { operation.Summary = text.Summary; operation.Description = text.Description; }
+            if (id == "PurviewConnection.Get" &&
+                operation.Responses?.TryGetValue("200", out var connectionResponse) == true &&
+                connectionResponse is OpenApiResponse mutableConnectionResponse)
+            {
+                mutableConnectionResponse.Headers ??= new Dictionary<string, IOpenApiHeader>();
+                mutableConnectionResponse.Headers["ETag"] = new OpenApiHeader
+                {
+                    Required = true,
+                    Description = "Quoted current Purview connection row version. Send the response body's unquoted rowVersion value in If-Match for the next reviewed mutation.",
+                    Schema = new OpenApiSchema { Type = JsonSchemaType.String }
+                };
+            }
             var policies = action.EndpointMetadata.OfType<IAuthorizeData>().Select(x => x.Policy).Where(x => x is not null).ToArray();
             if (policies.Length > 0 && !action.EndpointMetadata.OfType<IAllowAnonymous>().Any())
             {
@@ -77,11 +92,32 @@ public static class ApiDocumentation
             {
                 if (parameter.Name == "Idempotency-Key") { parameter.Required = true; parameter.Description = "Canonical UUID v4. Reuse only for a retry of this exact request; use a new value for a new action."; }
             }
-            if (id is "Agents.UpdateFeatures" or "System.UpdateSystemConfig")
+            if (id is "Agents.UpdateFeatures" or "System.UpdateSystemConfig" or
+                "PurviewConnection.Connect" or "PurviewConnection.Refresh")
             {
+                var purviewConnectorOperation = id is
+                    "PurviewConnection.Connect" or "PurviewConnection.Refresh";
                 operation.Parameters ??= [];
-                operation.Parameters.Add(new OpenApiParameter { Name = "Idempotency-Key", In = ParameterLocation.Header, Description = "Required for protection changes; must match body idempotencyKey (UUID v4).", Schema = new OpenApiSchema { Type = JsonSchemaType.String } });
-                operation.Parameters.Add(new OpenApiParameter { Name = "If-Match", In = ParameterLocation.Header, Description = "Required for protection changes; one exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.", Schema = new OpenApiSchema { Type = JsonSchemaType.String } });
+                operation.Parameters.Add(new OpenApiParameter
+                {
+                    Name = "Idempotency-Key",
+                    In = ParameterLocation.Header,
+                    Required = true,
+                    Description = purviewConnectorOperation
+                        ? "Canonical UUID v4 for this exact connector operation. Reuse it only to reconcile the same request."
+                        : "Canonical UUID v4 matching body idempotencyKey. Reuse it only to reconcile the same request.",
+                    Schema = new OpenApiSchema { Type = JsonSchemaType.String }
+                });
+                operation.Parameters.Add(new OpenApiParameter
+                {
+                    Name = "If-Match",
+                    In = ParameterLocation.Header,
+                    Required = true,
+                    Description = purviewConnectorOperation
+                        ? "Exact rowVersion returned by GET /api/v1/protection/purview/connection; use * only for the first connection when no state exists."
+                        : "Exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.",
+                    Schema = new OpenApiSchema { Type = JsonSchemaType.String }
+                });
             }
             return Task.CompletedTask;
         });

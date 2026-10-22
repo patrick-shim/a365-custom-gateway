@@ -64,7 +64,7 @@ export const retryProvisioningSchema = z.object({
 });
 export const registrationOperationSchema = z.object({
   operationId: operationIdSchema,
-  agentId: operationIdSchema,
+  agentId: operationIdSchema.nullable(),
   type: text,
   status: text,
   currentStep: nullableText,
@@ -161,7 +161,8 @@ export const revokedCredentialSchema = z.object({
 
 export type Agent = z.infer<typeof agentSchema>;
 export const purviewPolicyCatalogSchema = z.object({
-  tenantId: z.string().uuid(), retrievedAtUtc: z.string().datetime({ offset: true }), source: z.literal("Purview"),
+  tenantId: z.string().uuid(), retrievedAtUtc: z.string().datetime({ offset: true }),
+  source: z.literal("AcceptedPurviewConnectorSnapshot"),
   items: z.array(z.object({
     id: z.string().uuid(), displayName: z.string().min(1).max(256), mode: z.string(),
     enforcementPlanes: z.array(z.string()), individualApplicationIds: z.array(z.string().uuid()),
@@ -169,8 +170,55 @@ export const purviewPolicyCatalogSchema = z.object({
     compatibility: z.object({ canAssign: z.boolean(), reason: z.string().nullable() }),
   })).max(2048),
 });
+export const purviewConnectionStateSchema = z.enum([
+  "NotConfigured", "Connecting", "Connected", "Refreshing", "Degraded", "Disconnected",
+]);
+export const purviewConnectionSchema = z.object({
+  tenantId: z.string().uuid(),
+  connectorInstanceId: z.string().uuid().nullable(),
+  state: purviewConnectionStateSchema,
+  connectorProfile: z.literal("LocalWindows").nullable(),
+  refreshMode: z.literal("Manual"),
+  lastHeartbeatAtUtc: z.string().datetime({ offset: true }).nullable(),
+  lastAttemptedRefreshAtUtc: z.string().datetime({ offset: true }).nullable(),
+  lastSuccessfulRefreshAtUtc: z.string().datetime({ offset: true }).nullable(),
+  catalogRetrievedAtUtc: z.string().datetime({ offset: true }).nullable(),
+  policyCount: z.number().int().nonnegative(),
+  compatiblePolicyCount: z.number().int().nonnegative(),
+  incompatiblePolicyCount: z.number().int().nonnegative(),
+  catalogVerificationStatus: z.enum(["Unavailable", "Verified"]),
+  currentOperationId: operationIdSchema.nullable(),
+  lastFailureCode: z.string().min(1).nullable(),
+  correlationId: z.string().min(1).nullable(),
+  rowVersion: z.string().min(1),
+}).superRefine((value, context) => {
+  if (value.compatiblePolicyCount + value.incompatiblePolicyCount !== value.policyCount) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Policy counts must reconcile." });
+  }
+  if (value.state !== "NotConfigured" && value.rowVersion === "*") {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Only an unconfigured connection can use the initial row version." });
+  }
+});
+export const purviewConnectorOperationAcceptedSchema = z.object({
+  operationId: operationIdSchema,
+  status: z.enum(["Pending", "Running", "Succeeded", "Failed", "NeedsAttention", "TimedOut", "Cancelled"]),
+  connectionState: purviewConnectionStateSchema,
+  expiresAtUtc: z.string().datetime({ offset: true }),
+});
+export const purviewConnectorOperationSchema = registrationOperationSchema.extend({
+  agentId: z.null(),
+  type: z.enum(["Connect", "RefreshCatalog"]),
+  status: z.enum(["Pending", "Running", "Succeeded", "Failed", "NeedsAttention", "TimedOut", "Cancelled"]),
+  startedAtUtc: z.string().datetime({ offset: true }),
+  completedAtUtc: z.string().datetime({ offset: true }).nullable(),
+  targetKind: z.literal("PurviewConnector"),
+  targetId: operationIdSchema,
+});
 export type AgentDetail = z.infer<typeof agentDetailSchema>;
 export type RegistrationOperation = z.infer<typeof registrationOperationSchema>;
+export type PurviewConnection = z.infer<typeof purviewConnectionSchema>;
+export type PurviewConnectionState = z.infer<typeof purviewConnectionStateSchema>;
+export type PurviewConnectorOperation = z.infer<typeof purviewConnectorOperationSchema>;
 export type Blueprint = z.infer<typeof blueprintListSchema>["items"][number];
 export type Registration = z.infer<typeof registrationSchema>;
 export type GatewayCredential = z.infer<typeof credentialSchema>;

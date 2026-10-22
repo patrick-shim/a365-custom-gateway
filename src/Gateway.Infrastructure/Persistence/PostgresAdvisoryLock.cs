@@ -23,9 +23,9 @@ internal static class PostgresAdvisoryLock
             throw new InvalidOperationException("The Gateway database connection string is unavailable.");
 
         var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync(ct);
         try
         {
+            await connection.OpenAsync(ct);
             var (k1, k2) = ToKeyPair(resourceName);
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT pg_advisory_lock(@k1, @k2);";

@@ -36,7 +36,7 @@ export function RegisterAgent() {
   const defaults = system.isSuccess ? system.data.registrationDefaults : undefined;
   const registrationOpen = !!defaults && system.data?.provisioningExecutionEnabled === true;
   const validName = name.trim().length > 0 && name.trim().length <= 256;
-  const validExternalId = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(externalId);
+  const validExternalId = /^[a-zA-Z0-9][a-zA-Z0-9._-]{2,127}$/.test(externalId);
   const validBlueprint = newBlueprint ? blueprintDisplayName.trim().length > 0 :
     compatible.some(b => b.blueprintObjectId === blueprintId);
   const cardStyle = { padding: 24, gap: 16, maxWidth: 620 };
@@ -96,7 +96,7 @@ export function RegisterAgent() {
       <PageHeader title="Register agent" subtitle="Name the agent, choose a blueprint, and save its Gateway key." />
       <Body1 block style={{ marginBottom: 16 }}>Step {step} of 3: {["Name", "Blueprint", "Key"][step - 1]}</Body1>
       {step < 3 && (system.isPending ? <Spinner label="Loading registration defaults" /> : system.isError ? (
-        <ErrorState title="Registration defaults are unavailable" error={system.error} onRetry={() => void system.refetch()} />
+        <ErrorState title="Registration defaults are unavailable" error={system.error} onRetry={() => system.refetch()} />
       ) : <>
         <Body1 block style={{ marginBottom: 8 }}>Registration environment: {defaults?.environment}</Body1>
         {defaults?.reason && <Caption1 block style={{ marginBottom: 16 }}>{defaults.reason}</Caption1>}
@@ -109,7 +109,7 @@ export function RegisterAgent() {
         <Card style={cardStyle}>
           <Field label="Agent name" required><Input value={name} maxLength={256} onChange={(_, data) => setName(data.value)} placeholder="Support Copilot" /></Field>
           <Field label="External ID" required hint="Your team uses this ID in API calls."
-            validationMessage={!validExternalId ? "Use letters, numbers, dots, hyphens, or underscores; start with a letter or number." : undefined}>
+            validationMessage={!validExternalId ? "Use 3–128 letters, numbers, dots, hyphens, or underscores; start with a letter or number." : undefined}>
             <Input value={externalId} maxLength={128} onChange={(_, data) => setExternalId(data.value)} />
           </Field>
           <Button appearance="primary" disabled={!validName || !validExternalId || !registrationOpen} onClick={() => setStep(2)} style={{ alignSelf: "flex-start" }}>Next</Button>
@@ -126,7 +126,7 @@ export function RegisterAgent() {
               <Input value={blueprintDisplayName} maxLength={256} disabled={busy || uncertain} onChange={(_, data) => setBlueprintDisplayName(data.value)} />
             </Field>
           ) : blueprints.isPending ? <Spinner label="Loading blueprints" /> : blueprints.isError ? (
-            <ErrorState error={blueprints.error} onRetry={() => void blueprints.refetch()} />
+            <ErrorState error={blueprints.error} onRetry={() => blueprints.refetch()} />
           ) : compatible.length === 0 ? <Body1>No compatible blueprints found. Create a new blueprint to continue.</Body1> : (
             <Field label="Blueprint" hint="This agent receives its own child identity." required>
               <Dropdown placeholder="Choose a blueprint" disabled={busy || uncertain}

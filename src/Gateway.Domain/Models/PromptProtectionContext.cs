@@ -64,10 +64,12 @@ public sealed record PromptProtectionContext(
         if (mode == PurviewPolicyMode.Enforce && individualPolicyBinding is null)
             throw new InvalidOperationException("A current individual policy binding is required to capture protected content.");
         var agentHash = ComputeAgentConfigurationHash(agent);
+        // Snapshot expiry is checked separately. Hash only stable assignment evidence so
+        // republishing identical policy content cannot invalidate an in-flight receipt.
         var hash = Digest(new
         {
-            Version = 3,
-            IndividualPolicyBinding = individualPolicyBinding,
+            Version = 4,
+            IndividualPolicyBindingDigest = individualPolicyBinding?.Digest,
             Agent = agentHash,
             Mode = mode
         });

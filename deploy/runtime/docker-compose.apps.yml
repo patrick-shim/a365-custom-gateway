@@ -11,6 +11,7 @@ services:
       - "127.0.0.1:${GATEWAY_API_HOST_PORT:-5080}:8080"
     volumes:
       - ../../.bootstrap/purview-catalog:/app/purview-catalog:ro
+      - ../../.bootstrap/purview-connector:/app/purview-connector
       - ../../.bootstrap/purview-assignments:/app/purview-assignments
       - ../../.bootstrap/secrets/blueprint-credentials:/app/blueprint-credentials:ro
     environment:
@@ -25,6 +26,12 @@ services:
         condition: service_healthy
       s3:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   worker:
     restart: unless-stopped
@@ -43,7 +50,7 @@ services:
       rabbitmq:
         condition: service_healthy
       api:
-        condition: service_started
+        condition: service_healthy
 
   console:
     restart: unless-stopped
@@ -59,4 +66,4 @@ services:
       CONSOLE_USE_MOCK: "false"
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy

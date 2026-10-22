@@ -1,204 +1,247 @@
-# Purview Connector vNext
+# Manual Purview Policy Refresh — Local Implementation Record
 
-**Status:** Approved direction; implementation deferred to the next version increment.
+**Status:** local Windows implementation complete; Purview regression suites
+passed; broader repository, live tenant, and restart acceptance not yet claimed
 
-This focused connector design supports the authoritative future-release
-specification and milestone plan in [`../../SPEC-VNEXT.md`](../../SPEC-VNEXT.md).
-Where the two documents differ, the root vNext specification governs.
+**Scope decision:** 2026-10-22, local M1–M5 implemented; server/cloud M6 remains
+on hold until the operator explicitly releases it
 
-## Objective
+**Current product specification:** [SPEC.md](../../SPEC.md)
 
-Replace the current host-bound Windows scheduled-task dependency with an explicit
-Purview Connector lifecycle that bootstrap installs and the Gateway Console
-operates. The connector discovers existing Purview DLP policies and
-applies reviewed policy targets to individual agent identities. It does not
-author policies, rules, classifiers, sensitive information types or exclusions.
+**Remaining milestones and release gates:** [SPEC-VNEXT.md](../../SPEC-VNEXT.md)
 
-The release must support the current local Windows deployment and establish a
-clean path to remote cloud hosting without changing the per-agent policy model.
+## 1. Implemented outcome
 
-## Product experience
+Gateway administrators explicitly connect to Purview and request policy-catalog
+refreshes from the Console. Initial bootstrap may retrieve and publish one verified
+catalog. After setup, a full provider catalog read occurs only for an accepted
+**Connect to Purview**, **Policy Refresh**, **Retry Policy Refresh**, or
+**Reconnect** operation.
 
-Data Protection will include a Purview connection card with a short explanation:
+Page load, browser focus, status polling, policy GET, listener heartbeat, elapsed
+time, ordinary API restart, Docker restart, and listener startup do not create a
+provider catalog read. Restart recovery may resume an already accepted operation
+within its original deadline.
 
-> Connect the gateway to Microsoft Purview to retrieve the existing DLP policy
-> catalog and manage reviewed per-agent policy assignments.
+Policy authorship remains in Purview. The Gateway discovers existing compatible
+policies and adds only a reviewed individual agent target. It does not create or
+edit policies, rules, sensitive information types, classifiers, exclusions,
+actions, or policy mode. The standalone policy-owner utility remains outside the
+Gateway runtime and connector.
 
-The primary action and status will follow this lifecycle:
+Runtime `processContent` evaluation is separate from catalog management. An aged
+display catalog does not by itself stop an agent with a valid confirmed assignment
+and required live runtime evidence. Required runtime protection still fails closed.
 
-| State | Primary action | Meaning |
-| --- | --- | --- |
-| Not configured | **Connect to Purview** | No verified management connection exists. |
-| Connecting | Disabled progress action | The gateway is validating permissions and retrieving the first catalog. |
-| Connected | **Refresh catalog** | A recent signed, tenant-bound catalog is available. |
-| Refreshing | Disabled progress action | An asynchronous catalog refresh is running. |
-| Degraded | **Try refresh** | A previous catalog exists, but the latest refresh failed or is approaching expiry. |
-| Disconnected | **Reconnect** | Credentials, permissions or the connector runtime require repair. |
-
-The card will show the tenant, connector location, last successful refresh,
-next scheduled refresh, policy count and current error summary. Detailed errors
-will use sanitized codes and correlation identifiers. Certificates, tokens and
-raw provider responses will never be returned to the browser.
-
-The policy catalog and per-agent assignment screens remain separate from the
-connection control. Connecting enables discovery; it does not select or apply a
-policy. Policy assignment continues to target the exact individual agent identity.
-
-## Bootstrap responsibilities
-
-Bootstrap will remain the authority for durable setup. Terminal and graphical
-bootstrap must provide the same behavior:
-
-1. Collect the Purview tenant, organization and deployment profile.
-2. Provision or reconcile the dedicated Entra management application.
-3. Provision certificate authentication and the minimum required Purview role.
-4. Configure the deployment's secret provider without exposing private material
-   to the Console or application database.
-5. Install or deploy the Purview Connector runtime.
-6. Start a first connection verification and catalog refresh.
-7. Record connector identity, ownership and health metadata in bootstrap state.
-8. Verify restart recovery before reporting setup complete.
-
-Reconciliation must be idempotent. Missing credentials stop with a repair action;
-bootstrap must not silently rotate credentials, adopt unrelated resources or
-recreate Purview policies.
-
-## Architecture
-
-The Purview Connector is a management-plane component. Prompt evaluation remains
-in the gateway API and must not wait for an interactive PowerShell session.
+## 2. Runtime architecture
 
 ```mermaid
 flowchart LR
-    Admin[Gateway administrator] --> Console[Gateway Console]
-    Console --> API[Gateway management API]
-    API --> Jobs[(Connection and refresh operations)]
-    Jobs --> Connector[Purview Connector]
-    Connector --> Secrets[Certificate or workload secret provider]
-    Connector --> Purview[Microsoft Purview management plane]
-    Connector --> Catalog[Signed catalog and assignment results]
-    Catalog --> API
-    API --> Agents[Per-agent policy selection]
+    Admin[Gateway administrator] --> Console[React Console]
+    Console --> API[Gateway API]
+    API --> DB[(PostgreSQL)]
+    API --> Transport[Authenticated local transport]
+    Transport --> Listener[Headless Windows listener]
+    Listener --> Purview[Purview management endpoint]
+    Listener --> Transport
+    API --> DB
 ```
 
-The connector will expose one implementation boundary for catalog reads and
-assignment writes. The gateway will continue to validate the signed envelope,
-tenant, catalog age, reviewed revision and individual target before accepting a
-result. A successful connection or catalog read is not proof of DLP enforcement.
+The Gateway API never invokes the PowerShell provider directly from an HTTP
+request. It records a durable operation in PostgreSQL. A background dispatcher
+publishes a typed command to the authenticated local transport. The logon-started
+Windows listener executes the bounded provider child, publishes one authenticated
+result, advances an authenticated checkpoint, and emits heartbeat evidence. The
+API accepts the result into PostgreSQL before it removes authenticated transport
+files covered by that checkpoint.
 
-The management API will create durable asynchronous operations rather than
-holding an HTTP request open while Microsoft services respond. Proposed endpoints:
+Commands, results, heartbeat, and checkpoint use separate HMAC-SHA256 domains and
+bind the tenant, connector, operation, action, generation, request hash, and time
+window as applicable. An old generation, wrong tenant or connector, invalid MAC,
+expired command, oversized message, or replay cannot replace accepted state.
 
-| Method and route | Purpose |
+The provider child is bounded to six minutes. Connect and refresh operations have
+a ten-minute deadline. Safe retry and crash recovery keep the original operation
+identity and deadline; they do not create a schedule.
+
+## 3. Source of truth and migration
+
+PostgreSQL is authoritative after migration:
+
+- `PurviewConnectorStates` stores the six-state connection projection and latest
+  accepted catalog metadata;
+- `PurviewConnectorOperations` stores durable Connect and RefreshCatalog work;
+- `PurviewCatalogSnapshots` stores each validated accepted catalog, its tenant,
+  connector, operation, generation, canonical hash, timestamps, and counts.
+
+`GET /api/v1/protection/purview/policies`, assignment review, and assignment
+confirmation read the latest accepted PostgreSQL snapshot. Their response source
+is `AcceptedPurviewConnectorSnapshot`.
+
+The former signed-file catalog is not the current runtime authority. It is accepted
+only as a one-time migration source when connector state is empty. The X.509
+signature, tenant, schema, completeness, uniqueness, freshness for management, and
+canonical policy revisions are verified before import.
+
+During a clean or migrated bootstrap, the catalog already read and verified by
+bootstrap is handed to the listener publication path. Bootstrap does not perform a
+second catalog read merely to seed PostgreSQL. It replaces the exact owned previous
+task with one logon-only listener task under the certificate-owning Windows user.
+That task has no recurring catalog-read trigger and opens no visible terminal.
+
+The current local profile still depends on that user signing in. Pre-logon service
+operation, Linux, containers, and cloud-managed workers belong to held M6.
+
+## 4. Provider-work triggers
+
+| Event | Implemented management-plane behavior |
 | --- | --- |
-| `GET /api/v1/protection/purview/connection` | Read authoritative connector status and freshness. |
-| `POST /api/v1/protection/purview/connection` | Begin initial connection or repair using bootstrap-owned configuration. |
-| `POST /api/v1/protection/purview/connection/refresh` | Request an immediate catalog refresh. |
-| `GET /api/v1/operations/{operationId}` | Read connection or refresh progress and sanitized failure details. |
+| Bootstrap publication | Accept the one bootstrap-verified catalog through the authenticated result path; no second provider read. |
+| Connect/Reconnect | Create one durable VerifyConnection operation and retrieve one complete catalog. |
+| Policy Refresh/Retry | Create one durable RefreshCatalog operation and retrieve one complete catalog. |
+| Page load, browser focus, GET polling | Read PostgreSQL only. |
+| Policy catalog GET | Return the latest accepted PostgreSQL snapshot only. |
+| Idle listener or heartbeat | Check local work and report liveness only. |
+| API, Docker, or listener restart | Restore local state and recover an accepted operation if eligible; do not create a refresh. |
+| Assignment review/confirm | Require the accepted catalog to be within the thirty-day management freshness window and bind its exact revision and individual identity. |
+| Assignment execution | Read the selected policy live, preserve unrelated scope, apply only the reviewed individual target, and read back the result. |
+| Prompt/response evaluation | Use the runtime Graph protection path; never invoke management PowerShell or an implicit catalog refresh. |
 
-The final routes and schemas must be represented in OpenAPI before release.
-Connection mutation requires the existing Gateway Administrator authorization
-boundary and produces an audit record.
+A policy added after the last successful inventory read appears only after the
+administrator requests Policy Refresh.
 
-## Deployment profiles
+Connector submissions and dispatcher transitions share one tenant serialization
+boundary. A transient PostgreSQL serialization or deadlock conflict before commit
+is retried a bounded number of times with a fresh transaction and authoritative
+state read. Every attempt preserves the same idempotency key, request hash,
+`If-Match` value, actor, and correlation. A semantic `409` or `412` outcome is not
+retried. Only a committed operation may publish a command, so contention cannot
+create a second operation or provider read.
 
-### Local Windows
+## 5. API and state contract
 
-Bootstrap installs a bounded, supervised connector runner under the Windows
-account that owns the certificate. The Console controls it through the management
-API. Windows sign-in, task state, last execution result and catalog freshness are
-reported as connector health instead of remaining hidden host requirements.
+The implemented Administrator-only routes are:
 
-### Container-capable local or server deployment
+| Method and route | Behavior |
+| --- | --- |
+| `GET /api/v1/protection/purview/connection` | Return persisted connection, heartbeat, catalog, operation, failure, and row-version state. It performs no provider read. |
+| `POST /api/v1/protection/purview/connection` | Accept a Connect operation. Body: `{"confirmConnection":true}`. |
+| `POST /api/v1/protection/purview/connection/refresh` | Accept a Policy Refresh operation. Body: `{}`. |
+| `GET /api/v1/operations/{operationId}` | Return durable operation progress and terminal outcome. |
 
-A dedicated `purview-connector` service is preferred over embedding management
-work in the API container. Container support is conditional on validating the
-exact Microsoft Purview management commands, authentication mode and module
-support on the target operating system. The current Windows certificate-store
-implementation must not simply be copied into a Linux image.
+Mutations require a canonical lowercase UUIDv4 `Idempotency-Key` and the current
+`If-Match` row version. `If-Match: *` is accepted only for the initial connection.
+A successful submission returns `202 Accepted` with an operation reference. It is
+not proof that a catalog was retrieved or that a Microsoft service ingested data.
 
-### Remote cloud
+Connection states are:
 
-Run the same connector contract as a managed worker or scheduled job. Private
-credentials belong in the platform secret store, such as Azure Key Vault, and
-must be injected only into the connector runtime. The API and connector exchange
-authenticated operations and signed results over a durable transport. The cloud
-profile must tolerate instance replacement and must not depend on an interactive
-administrator session.
+- `NotConfigured`
+- `Connecting`
+- `Connected`
+- `Refreshing`
+- `Degraded`
+- `Disconnected`
 
-## Reliability and security requirements
+Operation states are:
 
-- Run a bounded refresh immediately after connection and on a recurring schedule.
-- Recover automatically after host, process, container and cloud-instance restarts.
-- Keep the last successful catalog identifiable, but mark stale data clearly and
-  block new assignments once the trusted freshness window expires.
-- Never substitute an empty catalog or unverified cache for a failed provider read.
-- Retry read-only catalog retrieval safely. Preserve the existing reviewed-request
-  and authenticated-result protocol for assignment writes so unknown outcomes do
-  not authorize duplicate mutations.
-- Pin the publisher trust material and validate tenant, signature, age, schema and
-  policy compatibility before use.
-- Keep certificate private keys, tokens and assignment transport keys out of the
-  browser, logs, support bundles and PostgreSQL application rows.
-- Record connection, refresh, repair and assignment actions in the audit trail.
+- `Pending`
+- `Running`
+- `Succeeded`
+- `Failed`
+- `NeedsAttention`
+- `TimedOut`
+- `Cancelled`
 
-## Migration
+Only one connector operation runs for the tenant at a time. Duplicate idempotency
+keys replay the same accepted operation only when the exact request hash matches.
+Conflicting work and stale row versions fail without creating provider work.
 
-The upgrade must detect and reuse an owned management application, certificate,
-role group, policy catalog and current per-agent assignments. It must not recreate
-Purview policies or change their rules. Bootstrap installs the new connector,
-proves a successful signed refresh, switches the API to the new connector status,
-and only then retires the former Windows task or process.
+## 6. Console behavior
 
-Existing agents and API keys remain valid. Assignment state remains bound to the
-same agent identity and policy revision. Migration failure leaves the previous
-working connector intact and reports a repairable operation.
+Settings / Purview exposes the connection card and the state-appropriate action:
 
-## Delivery sequence
+| State | Primary action |
+| --- | --- |
+| `NotConfigured` | **Connect to Purview** |
+| `Connecting` | Disabled progress action |
+| `Connected` | **Policy Refresh** |
+| `Refreshing` | Disabled progress action; keep the previous accepted catalog visible |
+| `Degraded` | **Retry Policy Refresh** |
+| `Disconnected` | **Reconnect** |
 
-1. Define connector status, operation and health contracts in application code
-   and OpenAPI.
-2. Place the current Windows implementation behind the connector boundary and
-   expose Connect, Refresh and diagnostics through the management API.
-3. Add the Data Protection connection card and state-driven interaction.
-4. Add bootstrap installation, reconciliation, upgrade and rollback behavior.
-5. Validate a container-capable Microsoft management path, then implement the
-   remote worker profile with platform secret storage.
-6. Run local reboot, Docker restart, process termination and cloud instance
-   replacement tests before enabling the new profile by default.
+The card distinguishes listener heartbeat, last attempted refresh, last successful
+refresh, catalog retrieval time, catalog verification, policy counts, current
+operation, and sanitized failure details. It states that refresh is manual and
+shows no next scheduled refresh.
 
-## Release acceptance
+The Console polls an active operation every three seconds by replacing current
+state. It stops on an authoritative terminal status or an operation-status read
+error. Repeated `Pending` or `Running` responses remain liveness evidence even
+when step and percentage do not change; a catalog provider read may legitimately
+take several minutes. The server-owned operation deadline bounds polling. A read
+error stops animation and automatic polling and offers an explicit status check.
+The Console does not append progress components or let the page grow indefinitely.
 
-The version is complete when all of the following are demonstrated:
+## 7. Failure, catalog retention, and assignments
 
-- A clean bootstrap reaches **Connected** without a separately launched terminal.
-- Restarting the connector, Docker engine and host recovers catalog refreshes.
-- A terminated connector is restarted and produces a new signed catalog before
-  the current catalog expires.
-- Connection and refresh progress is clear in the Console and never grows or
-  remains animated after a terminal state.
-- Existing Purview policies appear without creating or modifying policy content.
-- A selected policy is assigned to one agent identity, blocks a matching test,
-  and leaves a sibling agent outside the selected policy scope.
-- Prompt Shields remains independently configurable and testable.
-- An expired, wrong-tenant or invalidly signed catalog fails closed with a clear
-  repair action.
-- Local upgrade preserves agents, keys, assignments and owned cloud resources.
-- The remote profile survives worker replacement without interactive sign-in.
-- OpenAPI, bootstrap, runtime, architecture and operator documentation match the
-  released behavior.
+A failed or timed-out refresh never becomes an empty success. The previous accepted
+catalog remains available and visibly dated. The connection becomes `Degraded`
+when an accepted snapshot exists and `Disconnected` when none exists.
 
-## Explicitly outside this increment
+Catalog age is a management-mutation gate, not a runtime expiration. Review and
+confirmation require an accepted snapshot no older than thirty days. A durable
+confirmed binding remains runtime evidence independently of later display-catalog
+age, while live Graph scope and inline verdict requirements continue to fail closed.
+This reuse limit is separate from connector-result validation: a successful
+provider operation still requires catalog evidence retrieved within fifteen
+minutes of that operation's completion.
 
-- Creating or editing Purview policies, rules, classifiers or sensitive
-  information types.
-- Changing the policy administrator's ownership of policy content.
-- Treating catalog connectivity or assignment success as enforcement proof.
-- Coupling Prompt Shields enablement to Purview connection state.
+After each accepted refresh, the Gateway reconciles current confirmed assignments.
+An assignment becomes `NeedsAttention` if its policy was removed, its revision
+changed, its individual target disappeared, or the policy became incompatible.
+The affected agent's protection revision changes so stale receipts cannot be used.
 
-## Pickup instruction
+Listener readiness is derived from persisted authenticated heartbeat evidence.
+The five-second heartbeat interval has a thirty-second stale boundary. Crossing it
+outside active work changes a connection with an accepted snapshot to `Degraded`
+with `PURVIEW_CONNECTOR_UNAVAILABLE`, retaining that snapshot; without a snapshot
+the connection becomes `Disconnected`. Recovery of the authenticated heartbeat
+restores only the liveness-induced state and performs no provider read.
+The Gateway does not rewrite the policy automatically; an administrator must
+refresh, review, and apply again if the assignment remains appropriate.
 
-Use the request **“Implement the Purview Connector vNext plan”** and reference
-this document. Begin with the connector status and operation contracts, then
-reconcile implementation decisions against current Microsoft Purview management
-support before selecting the remote runtime.
+## 8. Verification boundary
+
+Repository and offline tests cover:
+
+- legal connection and operation transitions, idempotency, concurrency, deadlines,
+  dispatcher-versus-submission serialization retry with one accepted operation,
+  and retained-catalog failure behavior;
+- command/result/heartbeat/checkpoint authentication, replay rejection, crash-window
+  command republication, terminal cleanup, and idle no-provider-read behavior;
+- one-time signed-file import and accepted PostgreSQL catalog reads;
+- assignment reconciliation to `NeedsAttention` and protection-revision change;
+- Console six-state rendering, duplicate submission control, terminal/stalled
+  polling, and stable page content;
+- bootstrap publication, exact-task migration, a single logon-only trigger, and
+  absence of a periodic catalog action.
+
+These tests do not prove a live tenant catalog read, live per-agent policy mutation,
+Docker-engine restart, Windows restart/sign-in recovery, Purview enforcement,
+same-blueprint sibling isolation, or downstream Agent 365/Purview/Defender
+visibility. Those checks require explicit gating and dedicated synthetic resources
+and remain unverified until actually run.
+
+The Purview consumption test project builds and all five of its executable
+regression suites pass. Console and bootstrap coverage above is part of the
+applicable broader repository gate; this record does not silently convert an
+unrun check into a pass.
+
+## 9. Held server/cloud milestone
+
+M6 remains on hold. It requires a separately proven non-interactive authentication
+path, platform secret provider, durable remote transport, supervised connector
+deployment, instance replacement, upgrade/rollback, and restart evidence. The local
+implementation must not be described as Linux, container, or cloud-managed Purview
+catalog support.

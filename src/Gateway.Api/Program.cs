@@ -64,9 +64,12 @@ builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddAgent365Services(builder.Configuration);
 
 builder.Services.AddPurviewServices(builder.Configuration);
+builder.Services.Configure<PurviewConnectorOptions>(
+    builder.Configuration.GetSection(PurviewConnectorOptions.SectionName));
 builder.Services.Configure<RuntimePolicyAssignmentOptions>(builder.Configuration.GetSection("RuntimePolicyAssignments"));
 builder.Services.AddScoped<Gateway.Domain.Interfaces.IAgentPolicyBindingReader, AgentPolicyBindings>();
 builder.Services.AddHostedService<AgentPolicyAssignmentWorker>();
+builder.Services.AddHostedService<PurviewConnectorDispatcher>();
 
 builder.Services.AddPromptShieldServices(builder.Configuration);
 

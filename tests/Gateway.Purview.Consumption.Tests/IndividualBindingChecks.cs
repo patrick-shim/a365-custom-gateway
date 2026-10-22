@@ -22,7 +22,7 @@ static class IndividualBindingChecks
         var tenant = Guid.NewGuid(); var child = Guid.Parse(agent.Agent365AgentId!);
         var policy = new PurviewExistingPolicy(Guid.NewGuid(), "Rollback-only test", "Enable", ["Application"], [child], true, new string('a',64), [child]);
         var source = new Catalog(new(tenant, DateTimeOffset.UtcNow, [policy]));
-        var bindings = new AgentPolicyBindings(db, source, Options.Create(new RuntimePurviewCatalogOptions { TenantId=tenant }));
+        var bindings = new AgentPolicyBindings(db, Options.Create(new RuntimePurviewCatalogOptions { TenantId=tenant }));
         agent.PurviewPolicySelectionMode="ExistingPolicy"; agent.FeatureConfiguration.PurviewEnabled=true;
         agent.RequestedPurviewPolicyMode=PurviewPolicyMode.Enforce;
         var row = new AgentPolicyAssignment { Id=Guid.NewGuid(), TenantId=tenant, AgentRegistrationId=agentId, AgentIdentityId=child,
@@ -34,19 +34,19 @@ static class IndividualBindingChecks
         var context = await repository.GetProtectionContextAsync(agentId, default) ?? throw new Exception("Exact current child assignment rejected.");
         if (context.PurviewMode != PurviewPolicyMode.Enforce || context.IndividualPolicyBinding is null ||
             !await repository.IsProtectionContextCurrentAsync(context, default)) throw new Exception("Individual receipt binding failed under PostgreSQL locks.");
-        foreach (var invalid in new[] { policy with { Revision=new string('b',64) }, policy with { AllAccountsApplicationIds=[] }, policy with { Mode="Disable" } })
+        foreach (var changedInventory in new[] { policy with { Revision=new string('b',64) }, policy with { AllAccountsApplicationIds=[] }, policy with { Mode="Disable" } })
         {
-            source.Value = source.Value with { Items=[invalid] };
-            if (await repository.IsProtectionContextCurrentAsync(context, default) || await bindings.ReadAsync(agent, default) is not null)
-                throw new Exception("Changed, excluded, or disabled scope retained a trusted binding.");
+            source.Value = source.Value with { Items=[changedInventory] };
+            if (!await repository.IsProtectionContextCurrentAsync(context, default) || await bindings.ReadAsync(agent, default) is null)
+                throw new Exception("Display inventory mutation silently invalidated durable assignment evidence.");
         }
         source.Value = source.Value with { Items=[policy], RetrievedAtUtc=DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1) };
-        if (await bindings.ReadAsync(agent, default) is not null) throw new Exception("Expired catalog retained a trusted binding.");
+        if (await bindings.ReadAsync(agent, default) is null) throw new Exception("Aged display inventory disabled durable assignment evidence.");
         source.Value = source.Value with { RetrievedAtUtc=DateTimeOffset.UtcNow };
         row.Status="Pending"; await db.SaveChangesAsync();
         if (await bindings.ReadAsync(agent, default) is not null) throw new Exception("Pending assignment became ready.");
         await tx.RollbackAsync();
-        Console.WriteLine("PostgreSQL rollback-only checks passed: exact child binding, receipt locking, changed/disabled/excluded policy, catalog expiry, and pending assignment fail closed.");
+        Console.WriteLine("PostgreSQL rollback-only checks passed: exact durable child binding, receipt locking, inventory-age independence, and pending assignment fail closed.");
     }
     private sealed class Catalog(PurviewPolicyCatalog value) : IPurviewPolicyCatalogClient
     {

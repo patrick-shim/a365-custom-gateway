@@ -4,6 +4,11 @@ The current controller and request/response definitions in `src/Gateway.Api` and
 `src/Gateway.Contracts` are authoritative. This page describes the runtime API;
 policy definitions and classifiers are managed in Purview.
 
+The local Windows Purview connector uses an explicit, asynchronous connection and
+Policy Refresh contract. It never refreshes the catalog because a page was opened,
+focused, or polled. Server/cloud connector support remains deferred in the
+[vNext plan](../spec/purview-connector-vnext.md).
+
 ## Interactive reference and schema
 
 Open `/docs` on the API listener or through the Console (default
@@ -78,18 +83,97 @@ not automatically repeat an uncertain credential issuance or Registry mutation.
 Registration and credentials use no-store responses; issued secret values are
 shown once and must not enter query caches or logs.
 
+`POST /api/v1/agents` requires `externalAgentId` to be 3–128 characters, begin
+with an ASCII letter or number, and contain only ASCII letters, numbers, dots,
+hyphens, or underscores. Invalid values return HTTP 400 with a field validation
+entry and have no side effects.
+
+Registry confirmation may return HTTP 503 when Microsoft throttles exact-ID
+readback or has not made the record readable. This is an unconfirmed state, not
+proof of creation or failure. Refresh the operation and retry its confirmation;
+an existing attempt is reconciled by GET and the create request is not repeated.
+
+## Manual Purview connection and Policy Refresh
+
+The Console reads durable local state and starts provider work only when a Gateway
+Administrator explicitly confirms **Connect** or chooses **Policy Refresh**.
+Bootstrap owns the connector identity, certificate, transport key, queue path, and
+Windows listener. These values never enter the browser or either mutation body.
+
+| Method and route | Purpose |
+| --- | --- |
+| `GET /api/v1/protection/purview/connection` | Read durable connector, heartbeat, operation, accepted-catalog, and failure state. This does not contact Purview or start work. |
+| `POST /api/v1/protection/purview/connection` | Confirm and queue one connection verification plus initial catalog read. |
+| `POST /api/v1/protection/purview/connection/refresh` | Queue one manual catalog refresh for an already recorded connector. |
+| `GET /api/v1/operations/{operationId}` | Read the authoritative asynchronous operation state returned by either mutation. |
+
+`GET /api/v1/protection/purview/connection` is `no-store`, returns an `ETag`, and
+also returns the same concurrency value as `rowVersion` in the body. Its `state`
+is one of `NotConfigured`, `Connecting`, `Connected`, `Refreshing`, `Degraded`, or
+`Disconnected`; `refreshMode` is `Manual`. Heartbeat time, last attempt, last
+success, catalog retrieval time, policy counts, current operation, sanitized
+failure code, correlation ID, and catalog verification status are reported
+separately. An old catalog and an unhealthy connector therefore remain visible as
+different facts.
+
+An authenticated heartbeat is current for thirty seconds. Outside an active
+operation, a missed boundary persists `Degraded` plus
+`PURVIEW_CONNECTOR_UNAVAILABLE` when an accepted catalog exists, preserving that
+snapshot, or `Disconnected` when none exists. Heartbeat recovery restores only
+this liveness-induced state and does not start provider work.
+
+Both mutations require:
+
+- `Authorization: Bearer <Entra token>` with `Gateway.Administrator`;
+- one canonical lowercase UUID v4 `Idempotency-Key`; and
+- `If-Match` containing the exact `rowVersion` returned by the latest GET.
+
+For the first connection, when GET returns `state: "NotConfigured"` and
+`rowVersion: "*"`, send `If-Match: *`. Later requests never use the wildcard. The
+connection body is `{"confirmConnection":true}`; the refresh body is `{}`.
+
+An accepted mutation returns HTTP 202 and this shape:
+
+```json
+{
+  "operationId": "00000000-0000-4000-8000-000000000000",
+  "status": "Pending",
+  "connectionState": "Refreshing",
+  "expiresAtUtc": "2030-01-01T00:10:00Z"
+}
+```
+
+The accepted response is not proof of connection or refresh success. Poll the
+returned operation. Connector operation status is `Pending`, `Running`,
+`Succeeded`, `Failed`, `NeedsAttention`, `TimedOut`, or `Cancelled`; terminal
+states set `pollingRecommended` to false and identify the connector through
+`targetKind: "PurviewConnector"` and `targetId`. For these operations `agentId` is
+null. Reusing the same idempotency key with the exact same request returns the same
+operation. Reusing it for different input returns 409. A different request while
+one is active returns 409 with `currentOperationId`; a stale row version returns
+412. Missing or invalid bootstrap-owned connector configuration returns 503.
+Brief internal database contention is retried with the exact mutation identity and
+reviewed precondition; the caller still receives either the single accepted
+operation or a sanitized non-acceptance response.
+
 ## Existing Purview policies
 
-`GET /api/v1/protection/purview/policies` returns a tenant-bound signed catalog:
-`tenantId`, `retrievedAtUtc`, `source: Purview`, and policy `items`. Items include
-policy ID/name, provider mode, enforcement planes, individual application IDs,
-definition revision, and `compatibility: { canAssign, reason }`.
+`GET /api/v1/protection/purview/policies` returns the latest connector result that
+the Gateway authenticated and accepted into PostgreSQL: `tenantId`,
+`retrievedAtUtc`, `source: AcceptedPurviewConnectorSnapshot`, and policy `items`.
+Items include policy ID/name, provider mode, enforcement planes, individual
+application IDs, definition revision, and
+`compatibility: { canAssign, reason }`.
 
-The API verifies signature, configured tenant and freshness. Missing, stale,
-invalid or unavailable catalog access returns a failure, never a successful empty
-catalog. Catalog access alone proves neither assignment access nor enforcement.
-Bootstrap configures the certificate-backed Windows catalog host and public-key
-binding. Settings only displays ongoing diagnostics.
+Acceptance verifies connector authentication, request/result binding, configured
+tenant, schema, completeness, uniqueness, canonical revisions, generation, and
+content hash. Missing or invalid accepted state returns a failure, never a
+successful empty catalog. A failed refresh retains the clearly dated previous
+accepted snapshot. Catalog age is display and management-review evidence; it does
+not silently remove an already confirmed runtime binding. Policy review and
+confirmation require a recently retrieved catalog and reject revision drift.
+Catalog access or assignment success proves neither enforcement nor downstream
+visibility.
 
 | Method and route | Purpose |
 | --- | --- |
@@ -104,8 +188,10 @@ observed enforcement and failure are separate states. The catalog host performs
 the authenticated assignment/readback; the Console polls authoritative status.
 
 There are no gateway endpoints for creating classifiers, sensitive information
-types, policy rules, shared blueprint profiles, or initial Purview connections.
-Those policy definitions are managed in Purview; tenant access is set up by bootstrap.
+types, policy rules, or shared blueprint profiles. Those policy definitions are
+managed in Purview. Bootstrap provisions and owns local connector access; the
+connection endpoint verifies that installed access and retrieves a catalog without
+collecting credentials from the administrator.
 
 ## Agent ingress
 
@@ -124,6 +210,12 @@ a gateway `processContent` endpoint. A prompt receipt binds the exact registrati
 content and protection context. Expired, replayed or changed-context receipts
 cannot authorize a different interaction. Prompt Shields and Purview are separate
 evaluations. An unavailable required protection service is not an allowed verdict.
+The protection-context identity uses stable durable assignment evidence. A trusted
+catalog refresh with an unchanged policy revision and target scope does not become
+a changed protection context. Display-catalog age does not expire that binding or
+an otherwise valid runtime request. Receipt lifetime, exact context binding, and
+the required live Graph protection evidence are still checked independently when
+the receipt is issued and consumed.
 
 `GET /health` and `GET /health/ready` expose service health/readiness. Deployment
 readiness alone does not establish live policy blocking or sibling isolation.

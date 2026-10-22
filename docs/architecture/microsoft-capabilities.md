@@ -100,9 +100,12 @@ script may read sensitive-information-type inventory for troubleshooting, but
 that is not a product catalog or policy-authoring feature.
 
 Bootstrap establishes certificate-authenticated management access through the
-[runtime catalog host](purview-catalog-host.md). The host publishes a signed,
-tenant-bound catalog of existing policies and accepts authenticated assignment
-requests. It preserves existing targets and exclusions, rejects conflicting
+[runtime catalog host](purview-catalog-host.md). A logon-started listener performs
+catalog reads only for an accepted Connect or Policy Refresh operation and returns
+an authenticated, tenant-bound result. After validation, PostgreSQL is authoritative
+for the accepted catalog; the signed bootstrap file is only a one-time import
+source when database connector state is empty. The host also accepts authenticated
+assignment requests, preserves existing targets and exclusions, rejects conflicting
 scope, and verifies the policy and rule revision after its add operation.
 
 The Console reviews an existing compatible policy and binds confirmation to the

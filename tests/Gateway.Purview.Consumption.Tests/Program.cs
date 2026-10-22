@@ -11,7 +11,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+ProtectionContextRefreshChecks.Run();
 await IndividualAssignmentChecks.RunAsync();
+await PurviewConnectorChecks.RunAsync();
+await PurviewConnectorBackendChecks.RunAsync();
 await IndividualBindingChecks.RunAsync();
 await SiblingGatewayCheck.RunAsync();
 // Missing identity must fail before a token request or Graph HTTP call.
@@ -51,11 +54,24 @@ PurviewPolicyCatalogValidation.Validate(snapshot, tenant);
 Check(PurviewPolicyCatalogValidation.Incompatibility(good) is null, "Compatible existing policy rejected.");
 foreach (var policy in new[] { good with { Mode = "Disable" }, good with { Mode = "TestWithoutNotifications" }, good with { EnforcementPlanes = ["CopilotExperiences"] }, good with { HasUploadTextBlock = false } })
     Check(PurviewPolicyCatalogValidation.Incompatibility(policy) is not null, "Unsupported policy accepted for blocking.");
-foreach (var invalid in new[] { snapshot with { TenantId = Guid.NewGuid() }, snapshot with { RetrievedAtUtc = DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1) }, snapshot with { Items = [good, good] }, snapshot with { Items = [null!] }, snapshot with { Items = [good with { Revision = "unversioned" }] } })
+foreach (var invalid in new[] { snapshot with { TenantId = Guid.NewGuid() }, snapshot with { Items = [good, good] }, snapshot with { Items = [null!] }, snapshot with { Items = [good with { Revision = "unversioned" }] } })
 {
     try { PurviewPolicyCatalogValidation.Validate(invalid, tenant); throw new Exception("Untrusted catalog accepted."); }
     catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }
 }
+var agedInventory = snapshot with
+{
+    RetrievedAtUtc = DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1)
+};
+var reusableInventory = snapshot with { RetrievedAtUtc = DateTimeOffset.UtcNow.AddDays(-29) };
+PurviewPolicyCatalogValidation.EnsureFreshForManagement(reusableInventory);
+PurviewPolicyCatalogValidation.Validate(agedInventory, tenant);
+try
+{
+    PurviewPolicyCatalogValidation.EnsureFreshForManagement(agedInventory);
+    throw new Exception("Aged inventory was accepted for a management mutation.");
+}
+catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED") { }
 var unconfigured = new RuntimePurviewCatalogClient(Options.Create(new RuntimePurviewCatalogOptions()));
 try { await unconfigured.ReadAsync(tenant, default); throw new Exception("Unconfigured catalog accepted."); }
 catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_SETUP_REQUIRED") { }

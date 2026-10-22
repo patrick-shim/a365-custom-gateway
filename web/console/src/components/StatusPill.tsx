@@ -5,15 +5,21 @@ type Tone = "success" | "warning" | "danger" | "informative" | "subtle";
 const toneByValue: Record<string, Tone> = {
   Healthy: "success",
   Succeeded: "success",
+  Verified: "success",
+  Assigned: "success",
+  Allowed: "success",
+  Deleted: "success",
   Blocked: "danger",
   Unconfirmed: "warning",
   Skipped: "subtle",
   Active: "success",
   Connected: "success",
+  Connecting: "informative",
   Installed: "success",
   On: "success",
   Ready: "success",
   Degraded: "warning",
+  Disconnected: "danger",
   Pending: "warning",
   DefaultOn: "warning",
   DefaultOff: "subtle",
@@ -30,15 +36,22 @@ const toneByValue: Record<string, Tone> = {
   Cancelled: "subtle",
   Completed: "success",
   Running: "informative",
+  Applying: "informative",
+  Refreshing: "informative",
+  Checking: "informative",
+  Deleting: "informative",
   Submitted: "informative",
   SimulationReady: "informative",
   PendingPropagation: "warning",
   RequiresManualIntervention: "warning",
+  NeedsAttention: "warning",
+  TimedOut: "danger",
   Expired: "danger",
   Off: "subtle",
   Disabled: "warning",
   NotConnected: "subtle",
   NotInstalled: "subtle",
+  NotConfigured: "subtle",
   Draft: "informative",
   Provisioning: "informative",
   AwaitingAdminApproval: "warning",
@@ -56,7 +69,8 @@ export function StatusPill({ value: supplied }: { value: string | null | undefin
   const value = typeof supplied === "string" && supplied.trim() ? supplied : "Unknown";
   const tone = toneByValue[value] ?? "informative";
   return (
-    <Badge className="status-pill" appearance="tint" color={colorByTone[tone]}><span className="status-dot" aria-hidden="true" />
+    <Badge className={`status-pill ${["Pending", "Running", "Connecting", "Applying", "Refreshing", "Checking", "Deleting", "Provisioning"].includes(value) ? "is-live" : ""}`}
+      appearance="tint" color={colorByTone[tone]}><span className="status-dot" aria-hidden="true" />
       {value === "AwaitingAdminApproval" ? "Registration required" : humanize(value)}
     </Badge>
   );

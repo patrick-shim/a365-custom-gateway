@@ -42,6 +42,7 @@ public static class DependencyInjection
         services.AddScoped<ISystemConfigurationRepository, SystemConfigurationRepository>();
         services.AddScoped<IPromptEvaluationRepository, PromptEvaluationRepository>();
         services.AddScoped<ISystemConfigurationMutationRepository, SystemConfigurationMutationRepository>();
+        services.AddScoped<IPurviewConnectorStore, PurviewConnectorStore>();
         services.AddScoped<
             ISystemConfigurationLockProvider,
             SystemConfigurationLockProvider>();

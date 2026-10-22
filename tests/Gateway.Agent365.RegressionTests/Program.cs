@@ -8,6 +8,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 await RegistryDeletionTests.RunAsync();
+await RegistryThrottlingTests.RunAsync();
+RegistrationValidationTests.Run();
 await AgentDeletionTests.RunAsync();
 
 const string first = "10000000-0000-0000-0000-000000000001";

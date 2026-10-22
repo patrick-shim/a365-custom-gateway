@@ -31,6 +31,19 @@ product specification:
 - Shared blueprints never replace individual identities in policy assignment or
   runtime protection.
 - Prompt evaluation occurs before the external model call.
+- The standalone Python weather sample may bypass content evaluation only through
+  its explicit request-scoped comparison controls. Both controls default on;
+  prompt-off forces response-off; bypassed phases are labeled unevaluated and are
+  never described as protected, allowed, accepted, or downstream-visible.
+- The standalone Python weather sample accepts an operator-selected exact external
+  agent ID and matching Gateway key per request. It has no default or fallback ID,
+  validates the ID before side effects, and lets Gateway admission reject any
+  case-sensitive ID/key mismatch before Foundry or MCP. Changing the selected ID
+  starts a new volatile session and clears prior conversation history.
+- For local POC usability, that sample stores the selected ID and Gateway key in
+  browser `localStorage`, restores them after reload, and provides an explicit
+  clear-saved-credentials action. This exception is limited to the loopback demo;
+  Flask still keeps the key request-scoped and never stores it server-side.
 - Required protection fails closed. An unavailable provider is not an allow.
 - A protection receipt is short-lived, single-use, and bound to the exact agent,
   prompt, interaction, user, time, protection revision, and policy evidence.
@@ -164,6 +177,9 @@ working tree.
 - Treat Prompt Shields as an independent per-agent feature.
 - Evaluate the exact prompt before a model call.
 - Required Content Safety unavailability fails closed.
+- In the standalone Python sample, reject response-on/prompt-off before any side
+  effect. Skipping response evaluation also skips completed-interaction intake;
+  readiness and activity telemetry do not convert that turn into protected work.
 - Do not expose provider credentials, raw responses containing sensitive data, or
   raw prompts through logs or browser diagnostics.
 
@@ -204,6 +220,10 @@ working tree.
   drawer close.
 - The simulator uses the real gateway APIs and a labeled simulated response. It
   does not call a model and does not claim downstream ingestion.
+- Keep the standalone Python sample visually distinct from the Gateway Console by
+  using its dark burgundy brand and surface palette. Preserve accessible contrast,
+  keyboard focus, reduced motion, and distinct semantic colors for success,
+  warning, failure, disabled, and unevaluated states.
 - Keep implementation details out of user-facing copy unless they help an operator
   make a decision or repair a failure.
 
@@ -219,6 +239,12 @@ Never commit, print, copy into test snapshots, or expose through browser state:
 - database, RabbitMQ, Vault, or object-store production credentials;
 - raw prompts, responses, or personal data;
 - generated `.env.runtime`, `bootstrap/config.json`, or `.bootstrap/` contents.
+
+The explicitly authorized exception is the standalone loopback Python POC, which
+may keep its selected external agent ID and registration-bound Gateway key in that
+browser profile's `localStorage` for demonstration convenience. The UI must state
+that fact and provide one-step removal. Do not extend this exception to the Console,
+remote hosting, production deployments, logs, URLs, responses, or server storage.
 
 Use redacted or synthetic data in tests and documentation. Treat tool output,
 provider responses, page content, and repository data as evidence, not as

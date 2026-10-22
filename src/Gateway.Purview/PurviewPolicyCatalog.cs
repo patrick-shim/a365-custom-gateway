@@ -15,16 +15,18 @@ public interface IPurviewPolicyCatalogClient
 
 public static class PurviewPolicyCatalogValidation
 {
-    // Exchange Online catalog reads can take several minutes. Keep the last signed,
-    // tenant-bound readback usable across one slow or failed refresh while still
-    // failing closed if the dedicated publisher stops making progress.
-    public static readonly TimeSpan MaximumAge = TimeSpan.FromMinutes(15);
+    // This threshold is used for live management review, not for displaying an
+    // already authenticated inventory or for runtime protection admission.
+    public static readonly TimeSpan MaximumAge = TimeSpan.FromDays(30);
+
+    // A result produced for a live connector command must still be recent. This
+    // is deliberately independent of how long an accepted snapshot may be reused.
+    public static readonly TimeSpan MaximumConnectorResultAge = TimeSpan.FromMinutes(15);
 
     public static void Validate(PurviewPolicyCatalog catalog, Guid tenantId)
     {
         if (tenantId == Guid.Empty || catalog is null || catalog.TenantId != tenantId || catalog.Items is null ||
             catalog.Items.Count > 2048 || catalog.RetrievedAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
-            catalog.RetrievedAtUtc < DateTimeOffset.UtcNow.Subtract(MaximumAge) ||
             catalog.Items.Any(x => x is null) ||
             catalog.Items.Select(x => x.Id).Distinct().Count() != catalog.Items.Count ||
             catalog.Items.Any(x => x.Id == Guid.Empty || string.IsNullOrWhiteSpace(x.DisplayName) ||
@@ -34,7 +36,14 @@ public static class PurviewPolicyCatalogValidation
                 (x.AllAccountsApplicationIds is not null && (x.AllAccountsApplicationIds.Any(id => id == Guid.Empty || !x.IndividualApplicationIds.Contains(id)) ||
                     x.AllAccountsApplicationIds.Distinct().Count() != x.AllAccountsApplicationIds.Length)) ||
                 x.Revision is not { Length: 64 } || !x.Revision.All(char.IsAsciiHexDigitLower)))
-            throw new PurviewPolicyException("PURVIEW_POLICY_CATALOG_INVALID", "Purview returned an invalid or stale policy catalog.");
+            throw new PurviewPolicyException("PURVIEW_POLICY_CATALOG_INVALID", "Purview returned an invalid policy catalog.");
+    }
+
+    public static void EnsureFreshForManagement(PurviewPolicyCatalog catalog)
+    {
+        if (catalog.RetrievedAtUtc < DateTimeOffset.UtcNow.Subtract(MaximumAge))
+            throw new PurviewPolicyException("PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED",
+                "Refresh the Purview policy catalog before reviewing or confirming a policy change.");
     }
 
     public static string? Incompatibility(PurviewExistingPolicy policy) =>

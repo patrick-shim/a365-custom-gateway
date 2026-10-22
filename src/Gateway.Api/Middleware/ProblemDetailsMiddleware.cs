@@ -77,6 +77,8 @@ public sealed class ProblemDetailsMiddleware
             {
                 "AgentIngressCredential" =>
                     ErrorCodes.AGENT_INGRESS_CREDENTIAL_NOT_FOUND,
+                "Operation" or "ProvisioningJob" =>
+                    ErrorCodes.OPERATION_NOT_FOUND,
                 _ => ErrorCodes.AGENT_NOT_FOUND
             };
 
@@ -113,6 +115,10 @@ public sealed class ProblemDetailsMiddleware
             if (!string.IsNullOrEmpty(ex.ErrorCode))
             {
                 problemDetails.Extensions["errorCode"] = ex.ErrorCode;
+            }
+            if (ex.ConflictingOperationId is { } operationId)
+            {
+                problemDetails.Extensions["currentOperationId"] = operationId;
             }
 
             await WriteProblemDetailsAsync(context, problemDetails);
@@ -173,6 +179,9 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => StatusCodes.Status502BadGateway,
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PURVIEW_CONNECTOR_SETUP_REQUIRED => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PURVIEW_CONNECTOR_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PURVIEW_CONNECTOR_RESULT_INVALID => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => StatusCodes.Status409Conflict,
                 ErrorCodes.PURVIEW_INVENTORY_STALE => StatusCodes.Status409Conflict,
@@ -196,6 +205,9 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => "Blueprint Catalog Invalid Response",
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_INCOMPATIBLE => "Blueprint Not Compatible",
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => "Purview Unavailable",
+                ErrorCodes.PURVIEW_CONNECTOR_SETUP_REQUIRED => "Purview Connector Setup Required",
+                ErrorCodes.PURVIEW_CONNECTOR_UNAVAILABLE => "Purview Connector Unavailable",
+                ErrorCodes.PURVIEW_CONNECTOR_RESULT_INVALID => "Purview Connector Evidence Invalid",
                 ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => "Protection Capability Unavailable",
                 ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => "Purview Tenant Not Connected",
                 ErrorCodes.PURVIEW_INVENTORY_STALE => "Purview Inventory Stale",

@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Gateway.Api/Gateway.Api.csproj" />
+    <ProjectReference Include="../../src/Gateway.Purview.CatalogHost/Gateway.Purview.CatalogHost.csproj" />
   </ItemGroup>
 </Project>

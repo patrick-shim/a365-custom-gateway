@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FluentProvider, webLightTheme } from "@fluentui/react-components";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,6 +12,7 @@ import {
   agent, agentId, blueprintObjectId, credentials, features, mockServer,
   operationId, registration, response, rowVersion, testKey, systemConfig,
   approvalAgent, registrationOperation, provisioningHistory, tenantId,
+  purviewConnection,
 } from "./test/fixtures";
 
 vi.mock("./auth/msal", () => ({
@@ -90,6 +91,18 @@ describe("Console routes with actual API envelopes", () => {
     renderApp("/register");
     await selectBlueprint();
     expect(screen.getByRole("button", { name: "Create agent" })).toBeEnabled();
+    expect(server.requests.some(r => r.method === "POST")).toBe(false);
+  });
+
+  it("rejects an external agent ID shorter than the domain minimum before submission", async () => {
+    renderApp("/register");
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Agent name" }), "Short ID test");
+    const externalId = screen.getByRole("textbox", { name: "External ID" });
+    await user.clear(externalId);
+    await user.type(externalId, "ab");
+    expect(screen.getByText(/Use 3–128 letters/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
     expect(server.requests.some(r => r.method === "POST")).toBe(false);
   });
 
@@ -437,28 +450,217 @@ describe("Console routes with actual API envelopes", () => {
     expect(JSON.stringify(client.getQueryCache().getAll().map(q => q.state.data))).not.toContain(testKey);
   });
 
-  it("uses only the signed catalog for connection diagnostics without starting old operations", async () => {
+  it("reads Purview connection state without starting a connector operation", async () => {
     renderApp("/settings/purview");
-    expect(await screen.findByText("A current, signed policy catalog is available.")).toBeVisible();
-    expect(screen.getByText(/does not prove that assignments can be written/)).toBeVisible();
+    expect(await screen.findByText("The connector is ready. Retrieve policy additions or changes only when you choose Policy Refresh.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Policy Refresh" })).toBeEnabled();
+    expect(screen.getByText("Manual refresh mode · no scheduled catalog refresh")).toBeVisible();
     expect(server.requests.every(r => r.method === "GET")).toBe(true);
-    expect(server.requests.some(r => r.path.includes("connection-operations"))).toBe(false);
+    expect(server.requests.filter(r => r.path === "/api/v1/protection/purview/connection")).toHaveLength(1);
   });
 
-  it("does not retain a successful connection claim after catalog refresh fails", async () => {
+  it.each([
+    ["NotConfigured", "Connect to Purview", false],
+    ["Connecting", "Connecting…", true],
+    ["Connected", "Policy Refresh", false],
+    ["Refreshing", "Policy refresh in progress…", true],
+    ["Degraded", "Retry Policy Refresh", false],
+    ["Disconnected", "Reconnect", false],
+  ] as const)("presents the %s Purview connection state with its exact action", async (state, label, disabled) => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      state,
+      rowVersion: state === "NotConfigured" ? "*" : rowVersion,
+    }));
     renderApp("/settings/purview");
-    await screen.findByText("A current, signed policy catalog is available.");
-    server.handlers.set("GET /api/v1/protection/purview/policies", () => response({ detail: "Catalog unavailable" }, 503));
-    await userEvent.setup().click(screen.getByRole("button", { name: "Refresh status" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Catalog unavailable");
-    expect(screen.queryByText("A current, signed policy catalog is available.")).not.toBeInTheDocument();
+    const action = await screen.findByRole("button", { name: label });
+    disabled ? expect(action).toBeDisabled() : expect(action).toBeEnabled();
+    expect(server.requests.every(r => r.method === "GET")).toBe(true);
   });
 
-  it("rejects stale catalog evidence in connection diagnostics", async () => {
-    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "Purview", retrievedAtUtc: "2000-01-01T00:00:00Z", items: [] }));
+  it("requires an explicit confirmation before starting the first Purview connection", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      connectorInstanceId: null,
+      state: "NotConfigured",
+      connectorProfile: null,
+      lastHeartbeatAtUtc: null,
+      lastAttemptedRefreshAtUtc: null,
+      lastSuccessfulRefreshAtUtc: null,
+      catalogRetrievedAtUtc: null,
+      policyCount: 0,
+      compatiblePolicyCount: 0,
+      incompatiblePolicyCount: 0,
+      catalogVerificationStatus: "Unavailable",
+      rowVersion: "*",
+    }));
+    server.handlers.set("POST /api/v1/protection/purview/connection", () => response({
+      operationId, status: "Pending", connectionState: "Connecting", expiresAtUtc: "2099-01-01T00:00:00Z",
+    }, 202));
     renderApp("/settings/purview");
-    expect(await screen.findByRole("alert")).toHaveTextContent("current policy catalog");
-    expect(screen.queryByText("A current, signed policy catalog is available.")).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Connect to Purview" }));
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(0);
+    expect(screen.getByText("Connect to Purview?")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm connection" }));
+    await waitFor(() => expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1));
+    const request = server.requests.find(r => r.method === "POST")!;
+    expect(request.path).toBe("/api/v1/protection/purview/connection");
+    expect(request.body).toEqual({ confirmConnection: true });
+    expect(request.headers.get("If-Match")).toBe("*");
+    expect(request.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it("keeps the previous verified snapshot visible when the connection is degraded", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      state: "Degraded",
+      lastFailureCode: "PURVIEW_CONNECTOR_UNAVAILABLE",
+      correlationId: operationId,
+    }));
+    renderApp("/settings/purview");
+    expect(await screen.findByText("The last management operation failed, but the previous verified catalog remains visible.")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("The previous verified catalog remains available");
+    expect(screen.getByText("2 total · 1 compatible · 1 incompatible")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry Policy Refresh" })).toBeEnabled();
+    expect(server.requests.every(r => r.method === "GET")).toBe(true);
+  });
+
+  it("suppresses duplicate Policy Refresh submissions and stops at terminal operation readback", async () => {
+    let releaseRequest!: () => void;
+    const gate = new Promise<void>(resolve => { releaseRequest = resolve; });
+    server.handlers.set("POST /api/v1/protection/purview/connection/refresh", async () => {
+      await gate;
+      return response({
+        operationId, status: "Pending", connectionState: "Refreshing", expiresAtUtc: "2099-01-01T00:00:00Z",
+      }, 202);
+    });
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+      ...registrationOperation,
+      agentId: null,
+      type: "RefreshCatalog",
+      status: "Succeeded",
+      currentStep: "PersistCatalog",
+      percentComplete: 100,
+      startedAtUtc: "2026-10-22T10:00:00Z",
+      completedAtUtc: "2026-10-22T10:00:08Z",
+      pollingRecommended: false,
+      requiredAction: null,
+      agent365RegistrationCompletionAvailable: false,
+      targetKind: "PurviewConnector",
+      targetId: purviewConnection.connectorInstanceId,
+    }));
+    renderApp("/settings/purview");
+    const user = userEvent.setup();
+    const refresh = await screen.findByRole("button", { name: "Policy Refresh" });
+    await user.click(refresh);
+    await waitFor(() => expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1));
+    expect(refresh).toBeDisabled();
+    await user.click(refresh);
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+    releaseRequest();
+    expect(await screen.findByText("Succeeded")).toBeVisible();
+    await waitFor(() => expect(server.requests.filter(r => r.path === `/api/v1/operations/${operationId}`)).toHaveLength(1));
+    expect(screen.getAllByLabelText("Purview operation progress")).toHaveLength(1);
+    expect(screen.queryByText("Checking operation status")).not.toBeInTheDocument();
+  });
+
+  it("keeps polling unchanged 20% Purview progress beyond thirty seconds until the Gateway reports success", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let succeeded = false;
+      const startedAtUtc = new Date(Date.now() - 5_000).toISOString();
+      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+        ...purviewConnection,
+        state: succeeded ? "Connected" : "Refreshing",
+        currentOperationId: succeeded ? null : operationId,
+      }));
+      server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+        ...registrationOperation,
+        agentId: null,
+        type: "RefreshCatalog",
+        status: succeeded ? "Succeeded" : "Running",
+        currentStep: succeeded ? "Completed" : "RefreshingCatalog",
+        percentComplete: succeeded ? 100 : 20,
+        startedAtUtc,
+        completedAtUtc: succeeded ? new Date().toISOString() : null,
+        pollingRecommended: !succeeded,
+        requiredAction: null,
+        agent365RegistrationCompletionAvailable: false,
+        targetKind: "PurviewConnector",
+        targetId: purviewConnection.connectorInstanceId,
+      }));
+
+      renderApp("/settings/purview");
+      expect(await screen.findByText("Refreshing Catalog")).toBeVisible();
+      expect(screen.getByText(/catalog retrieval can take several minutes/)).toBeVisible();
+      expect(screen.getByText("Checking operation status")).toBeVisible();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+
+      const livePolls = server.requests.filter(request => request.path === `/api/v1/operations/${operationId}`);
+      expect(livePolls.length).toBeGreaterThanOrEqual(10);
+      expect(screen.getByText("Checking operation status")).toBeVisible();
+      expect(screen.queryByText("Needs Attention")).not.toBeInTheDocument();
+      expect(screen.getAllByLabelText("Purview operation progress")).toHaveLength(1);
+
+      succeeded = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+
+      expect(screen.getByText("Succeeded")).toBeVisible();
+      expect(screen.queryByText("Checking operation status")).not.toBeInTheDocument();
+      const terminalPollCount = server.requests.filter(request => request.path === `/api/v1/operations/${operationId}`).length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+      expect(server.requests.filter(request => request.path === `/api/v1/operations/${operationId}`)).toHaveLength(terminalPollCount);
+    } finally {
+      cleanup();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces a previous terminal operation when durable state reports another administrator's active refresh", async () => {
+    const secondOperationId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let reportSecondOperation = false;
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      state: "Refreshing",
+      currentOperationId: reportSecondOperation ? secondOperationId : operationId,
+    }));
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+      ...registrationOperation,
+      agentId: null,
+      type: "RefreshCatalog",
+      status: "Succeeded",
+      currentStep: "Completed",
+      percentComplete: 100,
+      completedAtUtc: "2026-10-22T10:00:08Z",
+      pollingRecommended: false,
+      targetKind: "PurviewConnector",
+      targetId: purviewConnection.connectorInstanceId,
+    }));
+    server.handlers.set(`GET /api/v1/operations/${secondOperationId}`, () => ({
+      ...registrationOperation,
+      operationId: secondOperationId,
+      agentId: null,
+      type: "RefreshCatalog",
+      status: "Running",
+      currentStep: "RefreshingCatalog",
+      percentComplete: 40,
+      completedAtUtc: null,
+      pollingRecommended: true,
+      targetKind: "PurviewConnector",
+      targetId: purviewConnection.connectorInstanceId,
+    }));
+
+    renderApp("/settings/purview");
+
+    expect(await screen.findByText(new RegExp(operationId))).toBeVisible();
+    reportSecondOperation = true;
+    await userEvent.setup().click(screen.getByRole("button", { name: "Check status" }));
+    expect(await screen.findByText(new RegExp(secondOperationId))).toBeVisible();
+    expect(screen.queryByText(new RegExp(operationId))).not.toBeInTheDocument();
+    expect(server.requests.some(request => request.path === `/api/v1/operations/${secondOperationId}`)).toBe(true);
   });
 
   it("redirects the retired classifier page to policies without requesting the classifier inventory", async () => {
@@ -488,10 +690,35 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
   });
 
+  it("shows a reconciled policy assignment as needing review rather than current enforcement", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({
+      agentId,
+      agentIdentityId: agent.agent365.agentId,
+      bindingCurrent: false,
+      allowObservedAtUtc: null,
+      blockObservedAtUtc: null,
+      items: [{
+        operationId,
+        policyId: "99999999-9999-4999-8999-999999999999",
+        policyName: "Changed DLP policy",
+        status: "NeedsAttention",
+        failureCode: "PURVIEW_POLICY_REVISION_CHANGED",
+        confirmedAtUtc: "2026-10-22T10:00:00Z",
+        expiresAtUtc: "2026-10-22T10:10:00Z",
+        assignedAtUtc: "2026-10-22T10:01:00Z",
+      }],
+    }));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    expect(await screen.findByText("This assignment no longer matches the current verified catalog. Refresh the catalog, review the exact policy revision and agent scope, then apply it again if it is still appropriate.")).toBeVisible();
+    expect(screen.getAllByText("Needs Attention")).toHaveLength(2);
+    expect(screen.getByText("One or more saved assignments need review before enforcement can be verified")).toBeVisible();
+    expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
+  });
+
   it("reviews the exact agent and policy before confirming, and does not label a pending assignment protected", async () => {
     const policyId = "99999999-9999-4999-8999-999999999999";
     const revision = "a".repeat(64);
-    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({ tenantId, source: "AcceptedPurviewConnectorSnapshot", retrievedAtUtc: new Date().toISOString(), items: [
       { id: policyId, displayName: "Existing DLP", mode: "Enable", enforcementPlanes: ["Application"], individualApplicationIds: [], revision, compatibility: { canAssign: true, reason: null } },
     ] }));
     server.handlers.set(`POST /api/v1/agents/${agentId}/purview-policies/review`, () => ({ operationId, agentId, agentIdentityId: agent.agent365.agentId, policyId, policyName: "Existing DLP", expiresAtUtc: new Date(Date.now()+60000).toISOString(), effect: "Only this individual agent is added." }));
@@ -524,6 +751,122 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByRole("progressbar", { name: "Applying assignment" })).not.toBeInTheDocument();
     expect(screen.getByText("Assigned · awaiting sync and gateway verification")).toBeVisible();
     expect(server.requests.filter(x => x.method === "POST")).toHaveLength(2);
+  });
+
+  it("keeps the previous Purview catalog view-only while a policy refresh is running", async () => {
+    const policyId = "99999999-9999-4999-8999-999999999999";
+    const retrievedAtUtc = new Date().toISOString();
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      state: "Refreshing",
+      currentOperationId: operationId,
+      catalogRetrievedAtUtc: retrievedAtUtc,
+    }));
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
+      tenantId,
+      source: "AcceptedPurviewConnectorSnapshot",
+      retrievedAtUtc,
+      items: [{
+        id: policyId, displayName: "Existing DLP", mode: "Enable", enforcementPlanes: ["Application"],
+        individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
+      }],
+    }));
+
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+
+    expect(await screen.findByText("Policy refresh is running")).toBeVisible();
+    expect(screen.getByText("The previous saved catalog is view-only until the Gateway accepts a fresh verified snapshot.")).toBeVisible();
+    expect(screen.getByLabelText("Choose an existing policy")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    expect(server.requests.every(request => request.method === "GET")).toBe(true);
+  });
+
+  it("waits for the exact newly accepted catalog before enabling assignment review", async () => {
+    const policyId = "99999999-9999-4999-8999-999999999999";
+    const loadedAtUtc = new Date(Date.now() - 60_000).toISOString();
+    const acceptedAtUtc = new Date().toISOString();
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      catalogRetrievedAtUtc: acceptedAtUtc,
+    }));
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
+      tenantId,
+      source: "AcceptedPurviewConnectorSnapshot",
+      retrievedAtUtc: loadedAtUtc,
+      items: [{
+        id: policyId, displayName: "Previous DLP", mode: "Enable", enforcementPlanes: ["Application"],
+        individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
+      }],
+    }));
+
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading the latest verified policy catalog");
+    expect(screen.getByLabelText("Choose an existing policy")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    expect(server.requests.every(request => request.method === "GET")).toBe(true);
+  });
+
+  it("keeps an expired accepted catalog visible but unavailable for a new review", async () => {
+    const policyId = "99999999-9999-4999-8999-999999999999";
+    const retrievedAtUtc = new Date(Date.now() - 31 * 24 * 60 * 60_000).toISOString();
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      catalogRetrievedAtUtc: retrievedAtUtc,
+    }));
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
+      tenantId,
+      source: "AcceptedPurviewConnectorSnapshot",
+      retrievedAtUtc,
+      items: [{
+        id: policyId, displayName: "Previous DLP", mode: "Enable", enforcementPlanes: ["Application"],
+        individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
+      }],
+    }));
+
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The saved policy catalog is view-only");
+    expect(screen.getByRole("option", { name: "Previous DLP" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Choose an existing policy")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+  });
+
+  it("clears an obsolete stale-catalog warning after a newer verified catalog is loaded", async () => {
+    const policyId = "99999999-9999-4999-8999-999999999999";
+    let retrievedAtUtc = new Date(Date.now() - 60_000).toISOString();
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      ...purviewConnection,
+      catalogRetrievedAtUtc: retrievedAtUtc,
+    }));
+    server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
+      tenantId,
+      source: "AcceptedPurviewConnectorSnapshot",
+      retrievedAtUtc,
+      items: [{
+        id: policyId, displayName: "Existing DLP", mode: "Enable", enforcementPlanes: ["Application"],
+        individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
+      }],
+    }));
+    server.handlers.set(`POST /api/v1/agents/${agentId}/purview-policies/review`, () => response({
+      title: "Purview Inventory Stale",
+      detail: "Refresh the Purview policy catalog before reviewing or confirming this assignment.",
+      errorCode: "PURVIEW_INVENTORY_STALE",
+      correlationId: operationId,
+    }, 409));
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByLabelText("Choose an existing policy"), policyId);
+    await user.click(screen.getByRole("button", { name: "Review assignment" }));
+    expect(await screen.findByText("Assignment review could not be prepared")).toBeVisible();
+
+    retrievedAtUtc = new Date().toISOString();
+    await user.click(screen.getByRole("button", { name: "Reload saved catalog" }));
+
+    await waitFor(() => expect(screen.queryByText("Assignment review could not be prepared")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Choose an existing policy")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    expect(server.requests.filter(request => request.method === "POST")).toHaveLength(1);
   });
 
   it("stops animating an overdue assignment without inventing success or submitting again", async () => {
@@ -574,7 +917,7 @@ describe("Console routes with actual API envelopes", () => {
 
   it("shows the Purview catalog without calling the removed blueprint-profile workflow", async () => {
     server.handlers.set("GET /api/v1/protection/purview/policies", () => ({
-      tenantId, source: "Purview", retrievedAtUtc: new Date().toISOString(), items: [{
+      tenantId, source: "AcceptedPurviewConnectorSnapshot", retrievedAtUtc: new Date().toISOString(), items: [{
         id: operationId, displayName: "Existing tenant DLP", mode: "Enable", enforcementPlanes: ["Application"],
         individualApplicationIds: [], revision: "a".repeat(64), compatibility: { canAssign: true, reason: null },
       }],

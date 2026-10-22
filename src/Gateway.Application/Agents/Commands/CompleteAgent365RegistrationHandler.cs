@@ -17,7 +17,10 @@ internal sealed class CompleteAgent365RegistrationHandler :
     private const string DelegatedAuthenticationMode = "DelegatedAdministrator";
     private const string DirectRegistryPreviewProvider = "DirectRegistryPreview";
     private const string AcceptedEvidence = "DelegatedRegistryCreateAccepted";
-    private static readonly TimeSpan DependencyTimeout = TimeSpan.FromSeconds(60);
+    // Keep each provider phase inside the Console's 45-second request window.
+    // An ambiguous POST may be followed by one separately bounded GET-only
+    // reconciliation phase, so each phase receives at most 15 seconds.
+    private static readonly TimeSpan DependencyTimeout = TimeSpan.FromSeconds(15);
 
     private readonly IAgentRepository _agentRepository;
     private readonly IProvisioningJobRepository _jobRepository;
@@ -260,7 +263,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             throw new DomainException(
-                "The Registry record was created, but exact verification is temporarily unavailable. Repeat this action to perform a GET-only verification; the create will not be repeated.",
+                "The Agent 365 Registry outcome is unconfirmed because Microsoft has not completed exact verification. Wait briefly, refresh status, then reconcile this same operation; the create will not be repeated.",
                 ErrorCodes.AGENT365_DEPENDENCY_UNAVAILABLE);
         }
         catch (Agent365DelegatedRegistryException exception)

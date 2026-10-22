@@ -26,6 +26,9 @@ public class GatewayDbContext : DbContext
     public DbSet<SystemConfiguration> SystemConfigurations => Set<SystemConfiguration>();
     public DbSet<PromptEvaluationRecord> PromptEvaluationRecords => Set<PromptEvaluationRecord>();
     public DbSet<SystemConfigurationMutation> SystemConfigurationMutations => Set<SystemConfigurationMutation>();
+    public DbSet<PurviewConnectorStateRecord> PurviewConnectorStates => Set<PurviewConnectorStateRecord>();
+    public DbSet<PurviewConnectorOperation> PurviewConnectorOperations => Set<PurviewConnectorOperation>();
+    public DbSet<PurviewCatalogSnapshot> PurviewCatalogSnapshots => Set<PurviewCatalogSnapshot>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

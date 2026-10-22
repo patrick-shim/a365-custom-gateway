@@ -2,6 +2,7 @@ param([Parameter(Mandatory)][guid]$TenantId,
       [Parameter(Mandatory)][guid]$ApplicationId,
       [Parameter(Mandatory)][string]$Organization,
       [Parameter(Mandatory)][string]$CertificateThumbprint,
+      [Parameter(Mandatory)][ValidateSet('VerifyConnection','RefreshCatalog','ApplyAssignment')][string]$Operation,
       [string]$AssignmentRequestPath)
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
@@ -18,18 +19,24 @@ try {
         throw 'The exact connected tenant was not confirmed.'
     }
     . "$PSScriptRoot/Automation/Read-PurviewPolicyCatalog.ps1"
-    $catalog = Read-PurviewPolicyCatalog -TenantId $TenantId
+    $catalog = $null
     $assignment = $null
-    if ($AssignmentRequestPath) {
+    if ($Operation -in @('VerifyConnection','RefreshCatalog')) {
+        if ($AssignmentRequestPath) { throw 'Assignment request is not valid for a catalog read.' }
+        $catalog = Read-PurviewPolicyCatalog -TenantId $TenantId
+    }
+    elseif ($Operation -eq 'ApplyAssignment') {
+        if ([string]::IsNullOrWhiteSpace($AssignmentRequestPath)) { throw 'Assignment request is required.' }
         $request = Get-Content -LiteralPath $AssignmentRequestPath -Raw | ConvertFrom-Json
         if ([guid]$request.tenantId -ne $TenantId) { throw 'Wrong assignment tenant.' }
         $assignment = @{ assigned=$false; revision=$null; failureCode=$null }
         try {
             . "$PSScriptRoot/Automation/Add-PurviewIndividualTarget.ps1"
-            Add-PurviewIndividualTarget -Request $request -Catalog $catalog
+            # The assignment function re-reads the exact selected policy before
+            # mutation. It intentionally does not enumerate the full inventory.
+            Add-PurviewIndividualTarget -Request $request -Catalog $null
             $updated = Read-PurviewPolicyCatalog -TenantId $TenantId -PolicyId ([guid]$request.policyId)
-            $catalog.items = @($catalog.items | Where-Object id -NE $request.policyId) + @($updated.items)
-            $policy = @($catalog.items | Where-Object id -EQ $request.policyId)
+            $policy = @($updated.items | Where-Object id -EQ $request.policyId)
             if ($policy.Count -ne 1 -or $policy[0].allAccountsApplicationIds -notcontains $request.agentIdentityId) {
                 throw 'ASSIGNMENT_READBACK_PENDING'
             }

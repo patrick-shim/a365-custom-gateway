@@ -7,9 +7,11 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusPill } from "../../components/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
 import { evaluationLabel } from "../../api/display";
+import { RefreshIndicator } from "../../components/RefreshIndicator";
+import { purviewPolicyCatalogQueryKey } from "../../api/queryKeys";
 
 export function Policies() {
-  const catalog = useQuery({ queryKey: ["purview-policy-catalog"], queryFn: api.listPurviewPolicies, retry: false, refetchInterval: 60_000 });
+  const catalog = useQuery({ queryKey: purviewPolicyCatalogQueryKey, queryFn: api.listPurviewPolicies, retry: false, refetchInterval: 60_000 });
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const agents = useInfiniteQuery({
@@ -25,9 +27,11 @@ export function Policies() {
       <Card style={{ padding: 24, gap: 12 }}>
         <Text as="h2" size={500} weight="semibold">Existing policies from Purview</Text>
         <Body1>Your policy administrator owns the rules, sensitive information types, and actions. The gateway's role is to select existing policies for agents and verify enforcement.</Body1>
-        <Caption1>Policies are read from Purview. A compatible policy still needs an agent assignment, synchronization, and verified blocking.</Caption1>
-        {catalog.isPending ? <Spinner label="Loading policies from Purview" /> : catalog.isError ?
-          <ErrorState error={catalog.error} onRetry={() => void catalog.refetch()} /> : <>
+        <Caption1>This is the last verified saved catalog. A compatible policy still needs an agent assignment, synchronization, and verified blocking.</Caption1>
+        {catalog.isPending ? <Spinner label="Loading policies from Purview" /> : !catalog.data ?
+          <ErrorState error={catalog.error} onRetry={() => catalog.refetch()} /> : <>
+          {catalog.isError && <ErrorState title="The latest catalog refresh failed" error={catalog.error} onRetry={() => catalog.refetch()} />}
+          <RefreshIndicator active={catalog.isFetching} label="Reloading saved catalog" />
           <Caption1>Last read from Purview: {new Date(catalog.data.retrievedAtUtc).toLocaleString()}</Caption1>
           {catalog.data.items.length === 0 ? <Body1>Purview returned no policies for this tenant.</Body1> :
             <div style={{ overflowX: "auto" }}><Table aria-label="Policies from Purview">
@@ -39,6 +43,11 @@ export function Policies() {
               </TableRow>)}</TableBody>
             </Table></div>}
         </>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button disabled={catalog.isFetching} icon={catalog.isFetching ? <Spinner size="tiny" /> : undefined}
+            onClick={() => void catalog.refetch()}>{catalog.isFetching ? "Reloading saved catalog…" : "Reload saved catalog"}</Button>
+          <Button as="a" href="/settings/purview">Open Policy Refresh</Button>
+        </div>
         <Body1>Choose an agent below to select a compatible policy, review its individual identity, and apply the assignment. Assignment and verified gateway enforcement are shown separately.</Body1>
         <a href="https://purview.microsoft.com/datalossprevention/policies" target="_blank" rel="noopener noreferrer">Open policies in Purview ↗</a>
       </Card>
@@ -48,9 +57,10 @@ export function Policies() {
         <form onSubmit={event => { event.preventDefault(); setSearch(draft.trim()); }} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input aria-label="Search agents" placeholder="Find an agent" value={draft} onChange={(_, data) => setDraft(data.value)} style={{ minWidth: 0 }} />
           <Button type="submit">Search</Button>
-          <Button disabled={agents.isFetching} onClick={() => void agents.refetch()}>Refresh agents</Button>
+          <Button disabled={agents.isFetching} icon={agents.isFetching ? <Spinner size="tiny" /> : undefined}
+            onClick={() => void agents.refetch()}>{agents.isFetching ? "Refreshing…" : "Refresh agents"}</Button>
         </form>
-        {agents.isPending ? <Spinner label="Loading agents" /> : agents.isError ? <ErrorState error={agents.error} onRetry={() => void agents.refetch()} /> : items.length === 0 ? (
+        {agents.isPending ? <Spinner label="Loading agents" /> : agents.isError ? <ErrorState error={agents.error} onRetry={() => agents.refetch()} /> : items.length === 0 ? (
           <Body1>{search ? "No agents match your search." : "No agents registered yet."}</Body1>
         ) : <div style={{ overflowX: "auto" }}>
           <Table aria-label="Agent data protection">
@@ -62,7 +72,9 @@ export function Policies() {
             </TableRow>)}</TableBody>
           </Table>
         </div>}
-        {agents.hasNextPage && <Button style={{ alignSelf: "flex-start" }} disabled={agents.isFetchingNextPage} onClick={() => void agents.fetchNextPage()}>{agents.isFetchingNextPage ? "Loading..." : "Load more agents"}</Button>}
+        {agents.hasNextPage && <Button style={{ alignSelf: "flex-start" }} disabled={agents.isFetchingNextPage}
+          icon={agents.isFetchingNextPage ? <Spinner size="tiny" /> : undefined}
+          onClick={() => void agents.fetchNextPage()}>{agents.isFetchingNextPage ? "Loading more agents…" : "Load more agents"}</Button>}
       </Card>
     </div>
   </>;

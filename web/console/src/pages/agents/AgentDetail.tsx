@@ -44,7 +44,7 @@ export function AgentDetail() {
       <PageHeader title={a?.name ?? "Agent"} subtitle={a?.externalAgentId}
         actions={a && <><StatusPill value={a.status} /><Button disabled={agent.isFetching} onClick={() => void agent.refetch()}>Refresh status</Button></>} />
       {agent.isPending ? <Spinner label="Loading agent" /> : agent.isError ? (
-        <ErrorState error={agent.error} onRetry={() => void agent.refetch()} />
+        <ErrorState error={agent.error} onRetry={() => agent.refetch()} />
       ) : a && (
         <>
           {a.status === "Disabled" && <Card style={{ marginBottom: 16 }}><Text weight="semibold">Disabled on this gateway</Text><Body1>New prompt, activity and AI interaction submissions are blocked. The Agent 365 registration is unchanged.</Body1><Link to="/settings/agents">Manage gateway access</Link></Card>}
@@ -79,7 +79,7 @@ export function AgentDetail() {
           </Card>}
           {tab === "data-protection" && <AgentDataProtection key={`protection-${id}`} agent={a} />}
           {tab === "identity" && <Card style={{ gap: 12, padding: 24 }}>
-            {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => void blueprints.refetch()} />}
+            {blueprints.isError && <ErrorState title="Blueprint names could not be loaded" error={blueprints.error} onRetry={() => blueprints.refetch()} />}
             <Text weight="semibold">{blueprintName(a, blueprints.data)}</Text>
             <Caption1>Blueprint application ID</Caption1><Body1><code>{a.agent365?.blueprintId ?? "Not assigned"}</code></Body1>
             <Caption1>Blueprint object ID</Caption1><Body1><code>{a.agent365?.blueprintObjectId ?? "Not assigned"}</code></Body1>

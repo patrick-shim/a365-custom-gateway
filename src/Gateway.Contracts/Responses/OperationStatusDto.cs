@@ -8,7 +8,7 @@ public record OperationStatusDto(
     string Status,
     string? CurrentStep,
     int PercentComplete,
-    Guid AgentId,
+    Guid? AgentId,
     DateTime StartedAtUtc,
     DateTime? CompletedAtUtc,
     OperationErrorDto? Error,
@@ -18,4 +18,6 @@ public record OperationStatusDto(
     bool ReplaySupported = false,
     bool PollingRecommended = false,
     string? RequiredAction = null,
-    bool Agent365RegistrationCompletionAvailable = false);
+    bool Agent365RegistrationCompletionAvailable = false,
+    string? TargetKind = null,
+    Guid? TargetId = null);

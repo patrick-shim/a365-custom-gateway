@@ -40,9 +40,10 @@ runtime authentication does not pretend the workload app is a managed identity.
 React Setup offers the same configuration fields, validation, reviewed plan,
 provisioning, progress and verification through the same PowerShell engine. Its
 local C# host uses a one-time link, session isolation and request validation.
-No browser page performs its own cloud provisioning. Initial connection
-setup must not be deferred to the Console; Settings contains ongoing diagnostics,
-while policy selection and individual-agent assignment remain Console operations.
+No browser page performs its own cloud provisioning. Initial tenant identity,
+certificate, role, transport, and first catalog verification stay in bootstrap.
+The Console uses that exact owned configuration for operational Connect,
+Policy Refresh, diagnostics, policy selection, and individual-agent assignment.
 
 Configuration must explicitly select `deployProfile: runtime`. The
 [example](config.example.runtime.json) documents fields; the
@@ -51,6 +52,22 @@ credentials are preserved. Do not place tokens, passwords, private certificates,
 Gateway keys, or prompt content in checked-in configuration.
 
 ## Commands
+
+The [local manual-refresh design](../docs/spec/purview-connector-vnext.md) uses one
+background Windows listener and administrator-triggered Connect/Policy Refresh
+operations. Initial setup performs one verified catalog read and hands that exact
+result to the listener for publication; it does not make a second read. The API
+imports that signed bootstrap catalog once when connector tables are empty, then
+uses accepted PostgreSQL snapshots as authority.
+
+Bootstrap preserves the existing owned management application, certificate,
+role-group membership, transport key, stable connector instance ID, assignments,
+and runtime volumes. It replaces the old repeating task only after verifying exact
+task ownership. The installed task starts the headless listener at that user's
+logon, has no periodic trigger, and retries listener failure without authorizing a
+new catalog read. Idle heartbeat and restart alone do not contact Purview; recovery
+may resume an already accepted, unexpired operation. M6
+server/cloud connector configuration remains on hold.
 
 | Command | Behavior |
 | --- | --- |

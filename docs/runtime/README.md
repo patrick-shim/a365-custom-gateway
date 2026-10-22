@@ -13,7 +13,8 @@ The supported local topology is Docker Compose plus a Windows certificate-based 
 | `bootstrap/config.json` | Ignored, non-secret deployment settings |
 | `.bootstrap/state/` | Owned-resource checkpoints |
 | `.bootstrap/secrets/` | Credentials, transport key and blueprint-specific development credentials |
-| `.bootstrap/purview-catalog/` | Signed policy snapshots |
+| `.bootstrap/purview-catalog/` | Bootstrap-signed catalog migration source and connector identity material |
+| `.bootstrap/purview-connector/` | Stable connector ID, authenticated command/result/checkpoint transport and heartbeat |
 | `.bootstrap/purview-assignments/` | Authenticated assignment requests/results |
 | `.bootstrap/tools/` | Published management host binaries |
 | `.bootstrap/accepted-source/` | Source integrity material for reviewed installation plans |
@@ -49,11 +50,30 @@ Keep the Compose project name stable so existing database and object-store volum
 
 ## Diagnostics and API reference
 
+The [local manual-refresh design](../spec/purview-connector-vnext.md) is the active
+source contract. The Windows task starts one headless listener at the certificate-
+owning user's logon; it has no recurring catalog trigger. **Connect** and **Policy
+Refresh** in Settings create durable operations. Page loads, status checks, idle
+heartbeat, and ordinary API, Docker, or listener restart do not create provider
+work; recovery may resume an already accepted, unexpired operation.
+
 - `gateway.cmd status` reads saved checkpoints; `gateway.cmd verify` checks live API, database readiness and Console proxy/configuration.
 - `gateway.cmd doctor` checks dependencies and Microsoft sessions. `gateway.cmd diagnose` produces sanitized diagnostics.
 - Open [API reference](http://127.0.0.1:5081/docs) or the Console's API reference link. JSON and YAML contracts are available under `/openapi/v1.json` and `/openapi/v1.yaml`.
 - Use [operator diagnostics](../../tools/scripts/README.md) for explicit DLP testing. A readiness error is not a DLP block.
-- Check the Windows Purview scheduled task if catalog snapshots become stale. It runs at the certificate-owning user's sign-in and every five minutes afterward; a browser sign-in does not replace that Windows account or repair its certificate access.
+- Check the Windows Purview listener task and its last heartbeat if management
+  operations do not progress. The task starts at the certificate-owning user's
+  logon; a browser sign-in does not replace that Windows account or repair its
+  certificate access. After listener health is restored, use **Check status** to
+  reconcile the same operation before starting another.
 - Use [operations](../../operations/README.md) for queue and downstream-delivery boundaries.
 
 `/health` means the API process is responding. `/health/ready` checks database connectivity. Neither proves Purview enforcement, worker completion, or Microsoft destination visibility. Preserve correlation IDs and sanitized error codes for investigations; never include raw prompt content or credentials in support records.
+
+After a Docker engine restart, PostgreSQL may briefly report that it is still
+starting even though the application containers have also been restored. The API
+and worker retry this transient startup state for a bounded period. If the Console
+continues to report HTTP 502, check `docker compose ps`, `/health`, and recent API
+and worker logs. A running container without an API health response is not a
+healthy gateway. Once PostgreSQL is healthy, restarting only `api` and `worker`
+is a safe recovery step; it preserves named volumes and registration state.

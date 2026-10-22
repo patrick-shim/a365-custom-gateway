@@ -1001,12 +1001,14 @@ paths:
             format: uuid
         - name: Idempotency-Key
           in: header
-          description: Required for protection changes; must match body idempotencyKey (UUID v4).
+          description: Canonical UUID v4 matching body idempotencyKey. Reuse it only to reconcile the same request.
+          required: true
           schema:
             type: string
         - name: If-Match
           in: header
-          description: Required for protection changes; one exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.
+          description: Exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.
+          required: true
           schema:
             type: string
       requestBody:
@@ -1481,8 +1483,8 @@ paths:
     get:
       tags:
         - Operations
-      summary: Read provisioning operation status
-      description: "Poll this operation for authoritative stages, failure details and requested administrator actions. Do not infer completion from elapsed time.\n\nAuthorization policy: AdministratorOrOperator."
+      summary: Read asynchronous operation status
+      description: "Poll registration or Purview connector operations for authoritative stages, failure details and requested administrator actions. Do not infer completion from elapsed time.\n\nAuthorization policy: AdministratorOrOperator."
       operationId: Operations.GetOperationStatus
       parameters:
         - name: operationId
@@ -1696,12 +1698,257 @@ paths:
           description: Gateway rate limit exceeded. Respect Retry-After when supplied.
       security:
         - AgentKey: [ ]
+  /api/v1/protection/purview/connection:
+    get:
+      tags:
+        - PurviewConnection
+      summary: Read the local Purview connection state
+      description: "Reads durable connector, heartbeat and accepted-catalog status from the Gateway. Thirty seconds without an authenticated heartbeat reports degraded or disconnected local management readiness while retaining any accepted catalog. This endpoint never calls Purview or starts provider work.\n\nAuthorization policy: AdministratorOnly."
+      operationId: PurviewConnection.Get
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: Quoted current Purview connection row version. Send the response body's unquoted rowVersion value in If-Match for the next reviewed mutation.
+              required: true
+              schema:
+                type: string
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectionResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectionResponse'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectionResponse'
+        '403':
+          description: Forbidden
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: 'Missing, invalid or expired credential. Use the authentication scheme documented for this operation.'
+        '429':
+          description: Gateway rate limit exceeded. Respect Retry-After when supplied.
+      security:
+        - EntraBearer: [ ]
+    post:
+      tags:
+        - PurviewConnection
+      summary: Verify the installed Purview connector
+      description: "Accepts an asynchronous, operation-bound connection verification. Requires explicit confirmation, Idempotency-Key and the exact If-Match row version. HTTP 202 means queued, not connected.\n\nAuthorization policy: AdministratorOnly."
+      operationId: PurviewConnection.Connect
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Canonical UUID v4 for this exact connector operation. Reuse it only to reconcile the same request.
+          required: true
+          schema:
+            type: string
+        - name: If-Match
+          in: header
+          description: Exact rowVersion returned by GET /api/v1/protection/purview/connection; use * only for the first connection when no state exists.
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectPurviewRequest'
+          text/json:
+            schema:
+              $ref: '#/components/schemas/ConnectPurviewRequest'
+          application/*+json:
+            schema:
+              $ref: '#/components/schemas/ConnectPurviewRequest'
+        required: true
+      responses:
+        '202':
+          description: Accepted
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+        '400':
+          description: Bad Request
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          description: Precondition Failed
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Service Unavailable
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: 'Missing, invalid or expired credential. Use the authentication scheme documented for this operation.'
+        '403':
+          description: 'Authenticated caller is not permitted, or protection blocked the request. Inspect the response errorCode and correlationId.'
+        '429':
+          description: Gateway rate limit exceeded. Respect Retry-After when supplied.
+      security:
+        - EntraBearer: [ ]
+  /api/v1/protection/purview/connection/refresh:
+    post:
+      tags:
+        - PurviewConnection
+      summary: Refresh the Purview policy catalog
+      description: "Queues one authenticated catalog refresh through the installed connector. Requires Idempotency-Key and the exact If-Match row version. HTTP 202 is not proof of refresh success; poll the returned operation.\n\nAuthorization policy: AdministratorOnly."
+      operationId: PurviewConnection.Refresh
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Canonical UUID v4 for this exact connector operation. Reuse it only to reconcile the same request.
+          required: true
+          schema:
+            type: string
+        - name: If-Match
+          in: header
+          description: Exact rowVersion returned by GET /api/v1/protection/purview/connection; use * only for the first connection when no state exists.
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshPurviewCatalogRequest'
+          text/json:
+            schema:
+              $ref: '#/components/schemas/RefreshPurviewCatalogRequest'
+          application/*+json:
+            schema:
+              $ref: '#/components/schemas/RefreshPurviewCatalogRequest'
+        required: true
+      responses:
+        '202':
+          description: Accepted
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/PurviewConnectorOperationAcceptedResponse'
+        '400':
+          description: Bad Request
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Conflict
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          description: Precondition Failed
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: Service Unavailable
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+            text/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: 'Missing, invalid or expired credential. Use the authentication scheme documented for this operation.'
+        '403':
+          description: 'Authenticated caller is not permitted, or protection blocked the request. Inspect the response errorCode and correlationId.'
+        '429':
+          description: Gateway rate limit exceeded. Respect Retry-After when supplied.
+      security:
+        - EntraBearer: [ ]
   /api/v1/protection/purview/policies:
     get:
       tags:
         - PurviewPolicyCatalog
       summary: Read existing Purview policies
-      description: "Returns a fresh tenant-bound catalog and compatibility reasons. Failure returns 503 instead of a fabricated empty catalog. Policy definitions and classifiers are managed in Purview.\n\nAuthorization policy: AdministratorOnly."
+      description: "Returns the latest authenticated catalog accepted into authoritative Gateway persistence and compatibility reasons. Failure returns 503 instead of a fabricated empty catalog. Policy definitions and classifiers are managed in Purview.\n\nAuthorization policy: AdministratorOnly."
       operationId: PurviewPolicyCatalog.List
       responses:
         '200':
@@ -1773,12 +2020,14 @@ paths:
       parameters:
         - name: Idempotency-Key
           in: header
-          description: Required for protection changes; must match body idempotencyKey (UUID v4).
+          description: Canonical UUID v4 matching body idempotencyKey. Reuse it only to reconcile the same request.
+          required: true
           schema:
             type: string
         - name: If-Match
           in: header
-          description: Required for protection changes; one exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.
+          description: Exact row version matching body expectedRowVersion. Read the latest resource before reviewing a new change.
+          required: true
           schema:
             type: string
       requestBody:
@@ -2457,6 +2706,13 @@ components:
           type: string
         status:
           type: string
+    ConnectPurviewRequest:
+      required:
+        - confirmConnection
+      type: object
+      properties:
+        confirmConnection:
+          type: boolean
     ContentDto:
       required:
         - contentType
@@ -2624,7 +2880,9 @@ components:
             - string
           format: int32
         agentId:
-          type: string
+          type:
+            - 'null'
+            - string
           format: uuid
         startedAtUtc:
           type: string
@@ -2667,6 +2925,15 @@ components:
         agent365RegistrationCompletionAvailable:
           type: boolean
           default: false
+        targetKind:
+          type:
+            - 'null'
+            - string
+        targetId:
+          type:
+            - 'null'
+            - string
+          format: uuid
     OperationStepDto:
       required:
         - step
@@ -2895,6 +3162,116 @@ components:
             - 'null'
             - string
           format: uuid
+    PurviewConnectionResponse:
+      required:
+        - tenantId
+        - connectorInstanceId
+        - state
+        - connectorProfile
+        - refreshMode
+        - lastHeartbeatAtUtc
+        - lastAttemptedRefreshAtUtc
+        - lastSuccessfulRefreshAtUtc
+        - catalogRetrievedAtUtc
+        - policyCount
+        - compatiblePolicyCount
+        - incompatiblePolicyCount
+        - catalogVerificationStatus
+        - currentOperationId
+        - lastFailureCode
+        - correlationId
+        - rowVersion
+      type: object
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        connectorInstanceId:
+          type:
+            - 'null'
+            - string
+          format: uuid
+        state:
+          type: string
+        connectorProfile:
+          type:
+            - 'null'
+            - string
+        refreshMode:
+          type: string
+        lastHeartbeatAtUtc:
+          type:
+            - 'null'
+            - string
+          format: date-time
+        lastAttemptedRefreshAtUtc:
+          type:
+            - 'null'
+            - string
+          format: date-time
+        lastSuccessfulRefreshAtUtc:
+          type:
+            - 'null'
+            - string
+          format: date-time
+        catalogRetrievedAtUtc:
+          type:
+            - 'null'
+            - string
+          format: date-time
+        policyCount:
+          pattern: '^-?(?:0|[1-9]\d*)$'
+          type:
+            - integer
+            - string
+          format: int32
+        compatiblePolicyCount:
+          pattern: '^-?(?:0|[1-9]\d*)$'
+          type:
+            - integer
+            - string
+          format: int32
+        incompatiblePolicyCount:
+          pattern: '^-?(?:0|[1-9]\d*)$'
+          type:
+            - integer
+            - string
+          format: int32
+        catalogVerificationStatus:
+          type: string
+        currentOperationId:
+          type:
+            - 'null'
+            - string
+          format: uuid
+        lastFailureCode:
+          type:
+            - 'null'
+            - string
+        correlationId:
+          type:
+            - 'null'
+            - string
+        rowVersion:
+          type: string
+    PurviewConnectorOperationAcceptedResponse:
+      required:
+        - operationId
+        - status
+        - connectionState
+        - expiresAtUtc
+      type: object
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        connectionState:
+          type: string
+        expiresAtUtc:
+          type: string
+          format: date-time
     PurviewPolicyCatalogResponse:
       required:
         - tenantId
@@ -2946,6 +3323,8 @@ components:
           type: string
         compatibility:
           $ref: '#/components/schemas/PolicyCompatibilityResponse'
+    RefreshPurviewCatalogRequest:
+      type: object
     RegisterAgentRequest:
       required:
         - externalAgentId
@@ -3353,5 +3732,6 @@ tags:
   - name: Interactions
   - name: Operations
   - name: PromptEvaluations
+  - name: PurviewConnection
   - name: PurviewPolicyCatalog
   - name: System

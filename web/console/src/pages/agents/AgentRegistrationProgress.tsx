@@ -248,7 +248,7 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
     {!operationId && history.isSuccess && <MessageBar intent="warning"><MessageBarBody>
       No provisioning job was reported for this agent. Refresh setup status; if it remains unavailable, review API compatibility on Platform with the agent reference below.
     </MessageBarBody></MessageBar>}
-    {readError && <ErrorState title="Setup progress could not be verified" error={readError} onRetry={() => void checkOperation()} />}
+    {readError && <ErrorState title="Setup progress could not be verified" error={readError} onRetry={() => checkOperation()} />}
     {readError instanceof ApiError && readError.status === 403 && <Body1>
       Reading provisioning history and operations requires the Gateway API role <code>Gateway.Administrator</code> or <code>Gateway.Operator</code>.
     </Body1>}
@@ -283,6 +283,10 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
     </Button>}
     {retryError !== undefined && <ErrorState title="Provisioning retry was not accepted" error={retryError} />}
     {error !== undefined && <ErrorState title="Registration confirmation was not accepted" error={error} />}
+    {error instanceof ApiError && error.code === "AGENT365_DEPENDENCY_UNAVAILABLE" && <Body1>
+      Microsoft has not confirmed the exact Registry record yet. Wait briefly, select Refresh setup status, and then finish this same registration again.
+      The Gateway will perform GET-only reconciliation and will not create a duplicate record.
+    </Body1>}
     {error instanceof ApiError && error.status === 403 && <Body1>
       This signed-in session was refused. Confirmation requires the Gateway API role <code>Gateway.Administrator</code> and delegated{" "}
       <code>access_as_user</code>. <code>Gateway.Operator</code> can read progress but cannot finish registration.

@@ -21,6 +21,7 @@ public static class DependencyInjection
 
         services.AddMemoryCache();
         services.Configure<RuntimePurviewCatalogOptions>(configuration.GetSection(RuntimePurviewCatalogOptions.SectionName));
+        services.Configure<PurviewConnectorOptions>(configuration.GetSection(PurviewConnectorOptions.SectionName));
         services.AddSingleton<IPurviewPolicyCatalogClient, RuntimePurviewCatalogClient>();
         services.AddHttpClient(nameof(PurviewGraphClient), (serviceProvider, client) =>
         {
