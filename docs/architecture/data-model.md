@@ -28,10 +28,17 @@ storage, independently from the ingress credentials.
 ## Policy assignment and prompt decisions
 
 `AgentPolicyAssignments` references one registration and records the individual
-agent identity, selected existing Purview policy, reviewed definition revision,
-actor, confirmation window, assignment result and failure information. The foreign
-key rejects orphan assignments. The policy definition and classifier/rule content
-remain in Purview; shared blueprint profiles are not stored in this database.
+agent identity, selected existing Purview policy, actor, confirmation window,
+assignment result, and failure information. Existing `ReviewedRevision` stores the
+client-submitted public whole-scope `revision` for stale-review/write protection.
+That value preserves the exact deployed legacy digest, including policy/rule
+provider timestamps and legacy array behavior. Existing
+`AssignedRevision` stores signed internal `definitionRevision`, which excludes all
+locations/targets, provider timestamps, and policy display name and is durable
+enforcement identity. Exact all-accounts target evidence is reconciled separately.
+No new assignment column is required. The foreign key rejects orphan assignments.
+Policy definition and classifier/rule content remain in Purview; shared blueprint
+profiles are not stored in this database.
 
 `PurviewConnectorStates` records one tenant's stable local connector identity,
 six-state lifecycle, manual refresh mode, heartbeat, last attempt/success,
@@ -67,9 +74,17 @@ shared credential, agent and global limits across replicas.
 a tenant/idempotency-key unique constraint. `AuditEvents` records administrative
 activity. Integration readiness is derived from configured runtime credentials and
 durable confirmed individual-agent policy evidence. Display-catalog age does not
-expire a binding. A refresh-proven removal, revision, compatibility, or exact-
-target change marks the assignment `NeedsAttention` and advances only the affected
-registration's protection revision.
+expire a binding. Adding another reviewed exact target changes the current catalog
+public `revision`; it does not rewrite an existing row's historical
+`ReviewedRevision` or durable `AssignedRevision`. A refresh-proven removal or
+narrowing/exclusion of the assigned all-accounts target, changed internal
+definition revision, or incompatibility marks the assignment `NeedsAttention` and
+advances only the affected registration's protection revision.
+
+For upgrade compatibility, a pre-upgrade `AssignedRevision` containing the legacy
+public digest is rewritten to internal `definitionRevision` only when it exactly
+matches the current public revision and the target and compatibility checks pass.
+That evidence-preserving rebase does not advance the agent protection revision.
 
 Concurrency tokens are application-generated binary values persisted in
 PostgreSQL. Constraint and index declarations use native PostgreSQL SQL.

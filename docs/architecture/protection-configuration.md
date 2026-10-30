@@ -26,12 +26,20 @@ package publisher. Only current policy-consumption endpoints are exposed.
 ## Assignment and enforcement
 
 The accepted catalog is tenant-bound and integrity-checked in PostgreSQL. A review
-binds the policy revision, administrator, agent identity and gateway protection
-revision, and requires the management inventory to be within its thirty-day
-mutation window. Confirmation creates a durable PostgreSQL assignment.
+binds the client-submitted public whole-scope `revision`, administrator, agent
+identity, and gateway protection revision, and stores it in `ReviewedRevision`.
+The accepted inventory has no age expiry and remains usable until manual sync
+replaces it; connector availability does not invalidate the cached selection.
+Confirmation creates a durable PostgreSQL assignment; successful signed readback
+stores internal `definitionRevision` in `AssignedRevision`.
 Authenticated request and result files connect the API to the Windows listener.
 The host reads the selected policy live, preserves unrelated policy scope, and
 verifies its write by reading the policy back.
+
+The public revision preserves the deployed legacy algorithm, including provider
+policy/rule timestamps and legacy array behavior. The internal revision
+excludes locations, provider timestamps, and policy display name, sorts only known
+outer set-like collections, and preserves unknown nested-array order.
 
 Pending assignment shows an animated wait, elapsed time and last successful
 status check. Completion, timeout, failure and unavailable status are distinct.
@@ -50,10 +58,12 @@ Only individual assignments, accepted management evidence, and setting-mutation
 records are stored; policy definitions remain owned by Purview.
 
 The protection-context hash uses the durable individual assignment digest and
-effective agent settings. Catalog retrieval and acceptance times stay outside
-that identity hash. An identical accepted refresh does not break an in-flight
-receipt. A refresh-proven semantic assignment/configuration change marks the
-assignment `NeedsAttention`, advances the affected protection revision, and
+effective agent settings. Catalog times and public whole-scope `ReviewedRevision`
+stay outside that identity hash. An identical accepted refresh or separately
+reviewed addition of another exact identity does not break an existing agent's
+in-flight receipt. A changed internal `AssignedRevision`, removal or
+narrowing/exclusion of that agent's exact all-accounts target, or incompatibility
+marks its assignment `NeedsAttention`, advances its protection revision, and
 invalidates prior evidence. Display-catalog age alone does not expire a confirmed
 runtime binding; missing required live Graph evidence still fails closed.
 

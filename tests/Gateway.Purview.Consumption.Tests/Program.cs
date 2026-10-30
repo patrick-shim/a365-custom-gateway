@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Gateway.Agent365;
+using Gateway.Api.Infrastructure;
+using Gateway.Domain.Entities;
 using Gateway.Domain.Models;
 using Gateway.Purview;
 using Microsoft.Extensions.Configuration;
@@ -11,6 +13,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+static SignedPurviewCatalog SignUnchecked(PurviewPolicyCatalog catalog, X509Certificate2 certificate)
+{
+    var payload = JsonSerializer.SerializeToUtf8Bytes(catalog, PurviewCatalogJson.Options);
+    var signingBytes = Encoding.UTF8.GetBytes("A365Gateway.PurviewCatalog.v1\n").Concat(payload).ToArray();
+    using var key = certificate.GetRSAPrivateKey() ?? throw new Exception("Test signing key unavailable.");
+    return new SignedPurviewCatalog(
+        Convert.ToBase64String(payload),
+        Convert.ToBase64String(key.SignData(signingBytes, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)));
+}
 ProtectionContextRefreshChecks.Run();
 await IndividualAssignmentChecks.RunAsync();
 await PurviewConnectorChecks.RunAsync();
@@ -34,7 +45,8 @@ var tenant = Guid.NewGuid();
 var blueprint = Guid.NewGuid();
 var first = Guid.NewGuid();
 var sibling = Guid.NewGuid();
-var good = new PurviewExistingPolicy(Guid.NewGuid(), "Existing policy", "Enable", ["Application"], [first], true, new string('a', 64));
+var good = new PurviewExistingPolicy(Guid.NewGuid(), "Existing policy", "Enable", ["Application"], [first], true,
+    new string('a', 64), new string('b', 64), [first]);
 var snapshot = new PurviewPolicyCatalog(tenant, DateTimeOffset.UtcNow, [good]);
 using var signingKey = RSA.Create(2048);
 using var signingCertificate = new CertificateRequest("CN=catalog-test", signingKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
@@ -54,24 +66,65 @@ PurviewPolicyCatalogValidation.Validate(snapshot, tenant);
 Check(PurviewPolicyCatalogValidation.Incompatibility(good) is null, "Compatible existing policy rejected.");
 foreach (var policy in new[] { good with { Mode = "Disable" }, good with { Mode = "TestWithoutNotifications" }, good with { EnforcementPlanes = ["CopilotExperiences"] }, good with { HasUploadTextBlock = false } })
     Check(PurviewPolicyCatalogValidation.Incompatibility(policy) is not null, "Unsupported policy accepted for blocking.");
-foreach (var invalid in new[] { snapshot with { TenantId = Guid.NewGuid() }, snapshot with { Items = [good, good] }, snapshot with { Items = [null!] }, snapshot with { Items = [good with { Revision = "unversioned" }] } })
+foreach (var invalid in new[]
+{
+    snapshot with { TenantId = Guid.NewGuid() },
+    snapshot with { Items = [good, good] },
+    snapshot with { Items = [null!] },
+    snapshot with { Items = [good with { Revision = "unversioned" }] },
+    snapshot with { Items = [good with { DefinitionRevision = "unversioned" }] },
+    snapshot with { Items = [good with { IndividualApplicationIds = [first, first] }] },
+    snapshot with { Items = [good with { AllAccountsApplicationIds = null! }] },
+    snapshot with { Items = [good with { AllAccountsApplicationIds = [first, first] }] },
+    snapshot with { Items = [good with { AllAccountsApplicationIds = [sibling] }] }
+})
 {
     try { PurviewPolicyCatalogValidation.Validate(invalid, tenant); throw new Exception("Untrusted catalog accepted."); }
     catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }
 }
-var agedInventory = snapshot with
-{
-    RetrievedAtUtc = DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1)
-};
-var reusableInventory = snapshot with { RetrievedAtUtc = DateTimeOffset.UtcNow.AddDays(-29) };
-PurviewPolicyCatalogValidation.EnsureFreshForManagement(reusableInventory);
-PurviewPolicyCatalogValidation.Validate(agedInventory, tenant);
+var acceptedSnapshot = snapshot;
+var acceptedState = "Connected";
+var malformedSignedCatalog = SignUnchecked(
+    snapshot with { Items = [good with { AllAccountsApplicationIds = null! }] },
+    signingCertificate);
 try
 {
-    PurviewPolicyCatalogValidation.EnsureFreshForManagement(agedInventory);
-    throw new Exception("Aged inventory was accepted for a management mutation.");
+    acceptedSnapshot = PurviewCatalogSignature.Verify(
+        malformedSignedCatalog, signingCertificate, tenant);
+    acceptedState = "Replaced";
+    throw new Exception("A correctly signed catalog with missing exact-scope evidence was accepted.");
 }
-catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED") { }
+catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }
+Check(ReferenceEquals(acceptedSnapshot, snapshot) && acceptedState == "Connected",
+    "A malformed signed catalog changed the prior accepted snapshot or state.");
+var legacyCatalogJson = System.Text.Json.Nodes.JsonNode.Parse(
+    JsonSerializer.Serialize(snapshot, PurviewCatalogJson.Options))!.AsObject();
+legacyCatalogJson["items"]![0]!.AsObject().Remove("definitionRevision");
+var legacyCatalog = JsonSerializer.Deserialize<PurviewPolicyCatalog>(
+    legacyCatalogJson.ToJsonString(), PurviewCatalogJson.Options)!;
+try
+{
+    PurviewPolicyCatalogValidation.Validate(legacyCatalog, tenant);
+    throw new Exception("A legacy catalog without definition revision evidence was accepted.");
+}
+catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }
+var agedInventory = snapshot with
+{
+    RetrievedAtUtc = DateTimeOffset.UtcNow.AddYears(-1)
+};
+PurviewPolicyCatalogValidation.Validate(agedInventory, tenant);
+var connectorInstanceId = Guid.NewGuid();
+var cachedSnapshot = new PurviewCatalogSnapshot
+{
+    TenantId = tenant, ConnectorInstanceId = connectorInstanceId, OperationId = Guid.NewGuid(), Generation = 1,
+    CatalogJson = JsonSerializer.Serialize(agedInventory, PurviewConnectorProtocol.Json),
+    CatalogHash = PurviewConnectorProtocol.Digest(agedInventory), RetrievedAtUtc = agedInventory.RetrievedAtUtc.UtcDateTime
+};
+Check(AcceptedPurviewCatalog.Deserialize(cachedSnapshot, tenant, connectorInstanceId).Items[0].Id == good.Id,
+    "An accepted catalog expired before the next manual sync.");
+cachedSnapshot.CatalogHash = new string('0', 64);
+try { AcceptedPurviewCatalog.Deserialize(cachedSnapshot, tenant, connectorInstanceId); throw new Exception("Cached catalog integrity was bypassed."); }
+catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_INVALID") { }
 var unconfigured = new RuntimePurviewCatalogClient(Options.Create(new RuntimePurviewCatalogOptions()));
 try { await unconfigured.ReadAsync(tenant, default); throw new Exception("Unconfigured catalog accepted."); }
 catch (PurviewPolicyException failure) when (failure.FailureCode == "PURVIEW_POLICY_CATALOG_SETUP_REQUIRED") { }

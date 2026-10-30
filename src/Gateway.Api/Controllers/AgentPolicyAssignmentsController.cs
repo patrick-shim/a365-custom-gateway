@@ -128,14 +128,6 @@ public sealed class AgentPolicyAssignmentsController(GatewayDbContext db, IPurvi
         try
         {
             catalog = AcceptedPurviewCatalog.Deserialize(accepted, tenantId, connectorInstanceId);
-            PurviewPolicyCatalogValidation.EnsureFreshForManagement(catalog);
-        }
-        catch (PurviewPolicyException failure) when (
-            failure.FailureCode == "PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED")
-        {
-            throw new DomainException(
-                "Refresh the Purview policy catalog before reviewing or confirming this assignment.",
-                ErrorCodes.PURVIEW_INVENTORY_STALE);
         }
         catch (PurviewPolicyException)
         {

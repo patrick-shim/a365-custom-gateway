@@ -3,8 +3,9 @@
 **Status:** local M1–M5 implemented; applicable repository M7 checks in progress; M6 on hold
 **Current implemented specification:** [`SPEC.md`](SPEC.md)
 **Primary release theme:** manual Purview policy discovery with independent runtime protection
-**Implementation trigger:** satisfied by the operator's manual Policy Refresh request
-**Latest scope decision:** 2026-10-22; local M1–M5 implemented, keep M6 on hold
+**Implementation trigger:** satisfied by the operator's Manual sync request
+**Latest scope decision:** 2026-10-26; accepted catalogs remain usable without age
+expiry until successful manual sync, local M1–M5 implemented, keep M6 on hold
 
 ## 1. Document purpose
 
@@ -25,6 +26,10 @@ startup/recovery failures in the API and provisioning worker. That baseline
 reliability fix is part of `SPEC.md`; it does not start any vNext milestone. The
 restart acceptance below concerns the managed Purview Connector and its durable
 operations in addition to the existing container runtime.
+
+The current-release Console proxy also re-resolves the Compose `api` service
+through Docker DNS after API recreation. This baseline container-lifecycle fix
+preserves the current same-origin routes and does not begin a held vNext milestone.
 
 The current Console also owns the general interaction baseline in `SPEC.md`:
 confirmed content remains visible during refresh, mutations show bounded progress,
@@ -83,12 +88,23 @@ This lifecycle correction does not begin a held milestone.
 The sample's dark burgundy visual system distinguishes it from the blue Gateway
 Console while preserving accessible semantic outcome colors and focus states.
 
-The implemented runtime separates durable Purview assignment evidence from
-display-catalog age. Accepting an otherwise identical catalog does not invalidate
-an in-flight protection receipt, and an old inventory alone does not expire the
-confirmed binding. A refresh-proven policy/assignment/scope change advances the
-affected protection revision; missing required live Graph evidence still fails
-closed. `SPEC.md` contains the current invariant.
+The implemented runtime separates durable internal `definitionRevision` evidence
+from display-catalog age and public whole-scope `revision` review concurrency.
+The public value intentionally retains the exact deployed legacy algorithm,
+including provider policy/rule timestamps and legacy array behavior, so
+pre-upgrade rows remain comparable. The internal value excludes policy display
+name, locations, and provider timestamps, sorts only known outer set-like
+collections, and preserves unknown nested-array order.
+Accepting an otherwise identical catalog does not invalidate an in-flight
+protection receipt, and an old inventory alone does not expire the confirmed
+binding. Adding another individually reviewed target to a shared policy likewise
+preserves existing assignments whose exact all-accounts targets remain and whose
+internal definition revisions are unchanged.
+A refresh-proven removal, narrowing/exclusion, material rule/mode/definition
+change, or incompatibility advances only the affected protection revision;
+missing required live Graph evidence still fails closed. `SPEC.md` contains the
+current invariant. This current-release correction does not start M6 or any held
+vNext milestone.
 
 The local increment closes the former operational gap by representing the Windows
 dependency as an explicit **Purview Connector** with durable PostgreSQL state,
@@ -126,13 +142,41 @@ vNext must:
 
 - Initial setup publishes one already verified catalog. Later full reads occur
   only for an explicit Gateway Administrator **Connect**/**Reconnect** or
-  **Policy Refresh** operation.
+  **Manual sync** operation.
 - Page loads, local GET polling, elapsed time, listener heartbeat, and ordinary
   restarts do not trigger a new Purview catalog read. A restart may recover an
   already accepted operation within its deadline.
-- Policy review and confirmation require a recently retrieved accepted catalog.
-  Assignment execution then reads the selected policy live, binds its current
-  revision and exact individual agent, and verifies any target mutation.
+- Policy review and confirmation use the last accepted catalog without age expiry.
+  The client submits its public whole-scope `revision`, which is stored in
+  `ReviewedRevision`. Assignment execution reads the selected policy live, rejects
+  a stale reviewed revision, and verifies the exact target mutation.
+- The signed result returns public `revision` plus internal `definitionRevision`;
+  the latter is stored in `AssignedRevision`. Adding a reviewed individual target
+  changes public revision for later writes but does not invalidate other confirmed
+  targets on the same policy. Durable reconciliation uses internal definition
+  revision plus each assignment's exact all-accounts target evidence.
+- Public `revision` preserves the exact deployed legacy digest, including provider
+  timestamps and legacy array behavior. A pre-upgrade `AssignedRevision` is
+  rebased only when it exactly matches that current public digest and target and
+  compatibility checks pass. The internal digest normalizes only known outer sets
+  and treats unknown nested-array order as potentially semantic.
+- A signed legacy or invalid assignment result terminates only its matching pending
+  operation with `ASSIGNMENT_RESULT_INVALID`. It never infers success, deletes the
+  evidence, repeats the provider mutation, or blocks processing of later rows.
+  Oversized result files are contained at this same per-operation boundary. This
+  code identifies incompatible Catalog Host or assignment-transport evidence, so
+  the operator inspects connector and operation status and repairs the
+  bootstrap-owned assignment transport before a new refresh or assignment review;
+  the UI never recommends immediate retry or resubmission.
+- Catalog acceptance requires unique individual targets and a non-null, unique
+  all-accounts target set that is a subset of them. Malformed signed catalogs keep
+  the prior accepted snapshot; connector status records the failed refresh without
+  adopting malformed catalog values. Publication preserves each raw application-
+  location occurrence until validation and never collapses repeated IDs. Exact
+  all-accounts and narrower locations for the same agent are invalid duplicate
+  evidence and fail closed. Null or blank authenticated payload/MAC fields
+  are rejected centrally; malformed heartbeats are ignored and malformed connector
+  results fail only their bound operation without replacing accepted catalog state.
 - Existing configured agents do not depend on how recently the display catalog
   was refreshed. Live Graph scope computation, ETag change handling, required
   inline verdicts, and fail-closed provider handling remain automatic.
@@ -146,6 +190,11 @@ vNext must:
 - The local M1–M5 foundation is implemented. Applicable M7 source and offline
   checks apply to this release. M6 server/cloud support remains on hold until the
   operator explicitly requests it.
+
+Current local maintenance distinguishes authenticated completion after the original
+deadline (`TimedOut`) from invalid transport evidence. Late results preserve the
+accepted catalog. This correction retains the existing listener, transport, and
+deadlines and does not release the held M6 milestone.
 
 ## 3. Non-goals
 
@@ -181,9 +230,9 @@ The card presents one authoritative state and one primary action:
 | --- | --- | --- |
 | `NotConfigured` | **Connect to Purview** | Explain that bootstrap-owned identity and permission settings are required. |
 | `Connecting` | Disabled progress action | Show current operation step and elapsed time. |
-| `Connected` | **Policy Refresh** | Show tenant, connector location, manual refresh mode, last success, catalog age, and policy count. |
+| `Connected` | **Manual sync** | Show tenant, connector location, manual refresh mode, last success, catalog age, and policy count. |
 | `Refreshing` | Disabled progress action | Keep the last verified catalog visible and identify it as the previous successful snapshot. |
-| `Degraded` | **Retry Policy Refresh** | Show the failed management operation and retain the visibly dated previous snapshot; do not infer a runtime failure from catalog age. |
+| `Degraded` | **Retry manual sync** | Show the failed management operation and retain the visibly dated previous snapshot; do not infer a runtime failure from catalog age. |
 | `Disconnected` | **Reconnect** | Explain whether credentials, permissions, host availability, or tenant validation requires repair. |
 
 The card also shows:
@@ -220,17 +269,16 @@ flowchart LR
     Runtime --> Sibling[Verify sibling isolation]
 ```
 
-The last accepted catalog remains visible for inspection during refresh and after
-a management-readiness failure, but it is read-only whenever the connection is
-`Connecting`, `Refreshing`, `Degraded`, or `Disconnected`, or its retrieval time is
-outside the thirty-day management freshness limit. The agent page disables
-assignment review and states why. A newly accepted verified revision replaces the
-saved view, clears obsolete stale-inventory feedback, and re-enables review only
-when the same readiness checks pass.
+The last accepted catalog remains usable for selection and review during sync and
+after a management-readiness failure, with no age-based expiry. The administrator
+chooses **Manual sync** to retrieve changes. Only a successful sync replaces the
+saved list. A newer accepted revision replaces the open page's view before its
+next review; assignment execution still checks the selected policy live.
 
 Connecting enables catalog discovery. It does not select a policy, change a policy,
 or enable Purview for every agent. Assignment continues to require an explicit
-review for an exact individual agent identity and policy revision.
+review for an exact individual agent identity and client-submitted public
+whole-scope `revision`.
 
 ### 4.3 Repair experience
 
@@ -299,8 +347,13 @@ flowchart TB
 The display catalog is previously verified administrative inventory accepted into
 PostgreSQL. Runtime admission uses durable per-agent assignment bindings plus live
 Graph scope and verdict evidence, never its retrieval timestamp. The local M1
-evidence contract is implemented; a refresh-proven material binding change marks
-the assignment `NeedsAttention` and advances only the affected protection revision.
+evidence contract distinguishes internal signed `definitionRevision`, stored in
+`AssignedRevision`, from public whole-scope `revision`, stored in
+`ReviewedRevision` for assignment-review concurrency. Adding an unrelated
+individual target changes only the latter. A refresh-proven removal of the
+assigned identity, narrowing/exclusion, material rule/mode/definition change, or
+incompatibility marks the assignment `NeedsAttention` and advances only the
+affected protection revision.
 
 ### 5.2 Connector interface
 
@@ -315,8 +368,9 @@ The application depends on one connector abstraction with operations equivalent 
 Provider-specific PowerShell or SDK details remain behind the connector boundary.
 Every command includes operation ID, tenant ID, connector identity, issued and
 expiry times, action type, request hash, and action-specific exact identifiers.
-Every result includes the same bindings, terminal status, provider revision or
-readback evidence, sanitized failure data, and a verifiable signature/MAC.
+Every result includes the same bindings, terminal status, signed public `revision`
+and internal `definitionRevision` or readback evidence, sanitized failure data,
+and a verifiable signature/MAC.
 
 Read-only refresh commands may be retried with bounded backoff. Assignment commands
 reuse the same operation ID and reconcile provider state before another mutation.
@@ -332,7 +386,7 @@ stateDiagram-v2
     NotConfigured --> Connecting: Connect requested
     Connecting --> Connected: Identity, permission, connector, and first catalog verified
     Connecting --> Disconnected: Terminal configuration failure
-    Connected --> Refreshing: Administrator requests Policy Refresh
+    Connected --> Refreshing: Administrator requests Manual sync
     Connected --> Degraded: Authenticated heartbeat absent for 30 seconds; snapshot retained
     Refreshing --> Connected: New trusted catalog accepted
     Refreshing --> Degraded: Refresh failed; previous catalog still trusted
@@ -380,7 +434,7 @@ These local routes are implemented and are part of the current contract in
 | --- | --- | --- |
 | `GET /api/v1/protection/purview/connection` | Gateway Administrator | Read connection, listener health, catalog age, and current-operation state without a provider call. |
 | `POST /api/v1/protection/purview/connection` | Gateway Administrator | Begin initial connection or post-repair verification using bootstrap-owned configuration. |
-| `POST /api/v1/protection/purview/connection/refresh` | Gateway Administrator | Request an immediate bounded Policy Refresh operation. |
+| `POST /api/v1/protection/purview/connection/refresh` | Gateway Administrator | Request an immediate bounded Manual sync operation. |
 | `GET /api/v1/operations/{operationId}` | Existing operation-read policy | Read authoritative progress and terminal outcome. |
 
 ### 7.1 Connect request
@@ -494,7 +548,7 @@ without a console. That task has one logon trigger and no repetition interval,
 minute-based trigger, hourly trigger, calendar trigger, or other time trigger.
 Every bounded provider child is also windowless. This is process supervision, not
 periodic policy refresh; provider reads begin only for an accepted manual Connect,
-Reconnect, Policy Refresh, or assignment operation. Preserve and disclose the existing
+Reconnect, Manual sync, or assignment operation. Preserve and disclose the existing
 Windows account/sign-in requirement; a machine service or new certificate owner
 requires separately proven credential access, not an implicit move to LocalSystem.
 The API and Console report listener health and last management-operation results
@@ -595,13 +649,14 @@ an assignment with an unknown outcome.
   time, expiry, and canonical request hash.
 - Bootstrap-file signatures and runtime command/result MACs use explicit domains
   and pinned trust material.
-- Replay, wrong tenant, wrong connector, expired message, changed policy revision,
-  and target mismatch fail closed.
-- The last verified catalog remains identifiable regardless of age, but can never
-  authorize a new assignment after the thirty-day management freshness limit.
+- Replay, wrong tenant, wrong connector, expired message, stale public whole-scope
+  `revision`, and target mismatch fail closed before mutation. A changed internal
+  `definitionRevision` or exact all-accounts target fails durable reconciliation.
+- The last verified catalog remains usable for review and confirmation regardless
+  of age or management availability, until an explicit sync replaces it.
   Review and confirmation bind the accepted revision; execution then reads and
   verifies the selected policy and exact target through the host.
-- The thirty-day accepted-snapshot reuse limit is separate from connector-result
+- Indefinite accepted-snapshot reuse is separate from connector-result
   freshness. A newly completed provider operation still accepts only evidence
   retrieved within its fifteen-minute result-validation window.
   Snapshot age alone cannot deny configured runtime work; invalid tenant/identity
@@ -667,6 +722,10 @@ Deliverables:
 - connection and operation enums, entities, DTOs, validation, and concurrency;
 - separate catalog display, durable per-agent assignment binding, and live Graph
   scope/verdict evidence; no `DateTime.MaxValue` or ignored-error bypass;
+- separate internal durable `definitionRevision` in `AssignedRevision` from public
+  whole-scope review `revision` in `ReviewedRevision`, so an additive target does
+  not invalidate existing individually confirmed assignments and no new database
+  column or public API field is required;
 - versioned receipt semantics and safe behavior for pre-upgrade in-flight receipts;
 - implemented management routes and durable operation polling;
 - durable operation and audit records;
@@ -679,8 +738,9 @@ Deliverables:
 Exit criteria:
 
 - domain transition table is complete;
-- effective Graph scope is not misrepresented as proof of a specific selected
-  policy revision; unresolved evidence ambiguity prevents releasing the new gate;
+- effective Graph scope is not misrepresented as proof of a specific internal
+  policy `definitionRevision`; unresolved evidence ambiguity prevents releasing
+  the new gate;
 - controller/DTO/OpenAPI contract review passes;
 - no provider work is performed synchronously in HTTP requests;
 - PostgreSQL is authoritative after a one-time verified signed-file import.
@@ -729,12 +789,12 @@ Exit criteria:
 Deliverables:
 
 - connection card and all six connection states;
-- Connect, Policy Refresh, Retry Policy Refresh, and Reconnect actions;
+- Connect, Manual sync, Retry manual sync, and Reconnect actions;
 - operation stepper, elapsed time, last success, manual refresh mode, policy counts, and
   diagnostics;
 - explicit separation between connection and policy assignment;
-- read-only previous-catalog presentation and disabled assignment review while
-  refresh, connection state, or catalog age makes management review unavailable;
+- cached selection and review remain available regardless of catalog age,
+  sync activity, or management connectivity;
 - automatic adoption of a newer accepted catalog revision with obsolete
   stale-inventory feedback cleared;
 - responsive, keyboard-accessible, reduced-motion-aware implementation;
@@ -825,7 +885,7 @@ Deliverables and gates:
 | Authorization | Reader, Operator, Administrator, and unauthorized behavior per route |
 | Concurrency | Stale `If-Match`, duplicate idempotency key, concurrent refresh, connect-vs-refresh conflict, and dispatcher-vs-submission PostgreSQL serialization conflict with one accepted operation and no duplicate provider command |
 | Catalog trust | Aged accepted inventory remains visibly dated; expired/replayed operation results, wrong tenant/signer, malformed/incomplete catalogs and duplicate IDs are rejected |
-| Assignment | Exact individual target, preserved scope/exclusions, changed revision, unknown outcome reconciliation |
+| Assignment | Exact individual target, preserved scope/exclusions, additive sibling target stability, changed internal `definitionRevision`, stale public whole-scope `revision`, unknown outcome reconciliation |
 | Recovery | API restart, connector termination, Docker restart, Windows restart/sign-in, remote instance replacement where supported |
 | UI | Responsive layout, keyboard/focus, reduced motion, bounded polling, terminal progress, sanitized errors |
 | Migration | Existing agents, keys, assignments, roles, catalog, audit, and owned resources preserved |

@@ -13,20 +13,30 @@ function Add-PurviewIndividualTarget {
     }
     # Read the exact policy again immediately before mutation, never trust the inventory alone.
     $before = Get-DlpCompliancePolicy -Identity $policyId -ErrorAction Stop
-    $locations = @($before.Locations | ConvertFrom-Json -Depth 40)
+    $locations = @($before.Locations | ConvertFrom-Json -Depth 30)
+    $rawRulesBefore = @(Get-DlpComplianceRule -Policy $policyId -ErrorAction Stop)
+    $providerRevisionBefore = Get-PurviewLegacyPolicyRevision `
+        -Policy $before -Locations $locations -Rules $rawRulesBefore
+    if ($providerRevisionBefore -cne $Request.reviewedRevision) {
+        throw 'ASSIGNMENT_REVIEW_STALE'
+    }
+
     $existing = @($locations | Select-Object Workload,Location,LocationSource,LocationType,Exclusions,Inclusions |
         Where-Object { $_.Workload -eq 'Applications' -and $_.Location -eq $child.ToString() })
     if ($existing.Count -gt 0) {
-        if ($existing.Count -ne 1 -or $existing[0].LocationSource -ne 'Entra' -or $existing[0].LocationType -ne 'Individual' -or
-            @($existing[0].Exclusions | Where-Object { $null -ne $_ }).Count -ne 0 -or
-            @($existing[0].Inclusions | Select-Object Type,Identity | Where-Object { $_.Type -eq 'Tenant' -and $_.Identity -eq 'All' }).Count -ne 1) {
+        if ($existing.Count -ne 1 -or -not (Test-PurviewAllAccountsApplicationLocation $existing[0])) {
             throw 'ASSIGNMENT_EXISTING_SCOPE_CONFLICT'
         }
         return # Already exactly scoped; no provider write.
     }
-    $rulesBefore = ConvertTo-PurviewCanonicalJson @(Get-DlpComplianceRule -Policy $policyId -ErrorAction Stop | Sort-Object Guid |
-        Select-Object Guid,Name,Disabled,Priority,AdvancedRule,ContentContainsSensitiveInformation,RestrictAccess,WhenChangedUTC)
-    $otherBefore = ConvertTo-PurviewCanonicalJson $locations
+    $ruleDefinitionsBefore = @(Get-PurviewCanonicalRuleDefinitions $rawRulesBefore)
+    $rulesBefore = ConvertTo-PurviewCanonicalJson $ruleDefinitionsBefore
+    $otherBefore = ConvertTo-PurviewCanonicalSetJson (Get-PurviewCanonicalLocationDefinitions $locations)
+    $policyBefore = ConvertTo-PurviewCanonicalJson @{
+        mode = [string](Get-PurviewPropertyValue $before 'Mode')
+        enforcementPlanes = @(Get-PurviewSortedOrdinalUniqueStrings `
+            (Get-PurviewPropertyValue $before 'EnforcementPlanes'))
+    }
     # Delta syntax is essential. Supplying Inclusions here is not a confirmed scope addition.
     $delta = ConvertTo-Json -InputObject @(@{
         Workload='Applications'; Location=$child.ToString(); LocationSource='Entra'; LocationType='Individual'
@@ -35,11 +45,24 @@ function Add-PurviewIndividualTarget {
     Set-DlpCompliancePolicy -Identity $policyId -Locations $delta -Confirm:$false -ErrorAction Stop | Out-Null
     $after = Get-DlpCompliancePolicy -Identity $policyId -ErrorAction Stop
     $afterLocations = @($after.Locations | ConvertFrom-Json -Depth 40)
-    $otherAfter = ConvertTo-PurviewCanonicalJson @($afterLocations | Where-Object { -not ($_.Workload -eq 'Applications' -and $_.Location -eq $child.ToString()) })
-    $rulesAfter = ConvertTo-PurviewCanonicalJson @(Get-DlpComplianceRule -Policy $policyId -ErrorAction Stop | Sort-Object Guid |
-        Select-Object Guid,Name,Disabled,Priority,AdvancedRule,ContentContainsSensitiveInformation,RestrictAccess,WhenChangedUTC)
-    if ($otherBefore -cne $otherAfter -or $rulesBefore -cne $rulesAfter -or $before.Mode -ne $after.Mode -or
-        (@($before.EnforcementPlanes) -join ',') -cne (@($after.EnforcementPlanes) -join ',')) {
+    $otherAfter = ConvertTo-PurviewCanonicalSetJson (Get-PurviewCanonicalLocationDefinitions @(
+        $afterLocations | Where-Object { -not ($_.Workload -eq 'Applications' -and $_.Location -eq $child.ToString()) }
+    ))
+    $rulesAfter = ConvertTo-PurviewCanonicalJson @(Get-PurviewCanonicalRuleDefinitions @(
+        Get-DlpComplianceRule -Policy $policyId -ErrorAction Stop
+    ))
+    $policyAfter = ConvertTo-PurviewCanonicalJson @{
+        mode = [string](Get-PurviewPropertyValue $after 'Mode')
+        enforcementPlanes = @(Get-PurviewSortedOrdinalUniqueStrings `
+            (Get-PurviewPropertyValue $after 'EnforcementPlanes'))
+    }
+    $added = @($afterLocations | Where-Object {
+        $_.Workload -eq 'Applications' -and $_.Location -eq $child.ToString()
+    })
+    if ($added.Count -ne 1 -or -not (Test-PurviewAllAccountsApplicationLocation $added[0])) {
+        throw 'ASSIGNMENT_READBACK_PENDING'
+    }
+    if ($otherBefore -cne $otherAfter -or $rulesBefore -cne $rulesAfter -or $policyBefore -cne $policyAfter) {
         throw 'ASSIGNMENT_CONCURRENT_POLICY_CHANGE'
     }
 }

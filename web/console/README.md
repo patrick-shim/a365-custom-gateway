@@ -54,8 +54,10 @@ npm run dev
 
 The container writes public settings into `config.js` from `CONSOLE_CLIENT_ID`,
 `CONSOLE_TENANT_ID`, and `CONSOLE_API_SCOPE`. Configure the same-origin proxy with
-`GATEWAY_API_ORIGIN` and `GATEWAY_API_HOST`. Sign-in uses MSAL authorization code
-with PKCE, then a delegated bearer token for API calls.
+`GATEWAY_API_ORIGIN` and `GATEWAY_API_HOST`. In Compose, Nginx resolves the `api`
+service through Docker DNS with a bounded cache, so a replacement API container
+does not require a Console restart. Sign-in uses MSAL authorization code with
+PKCE, then a delegated bearer token for API calls.
 
 Missing configuration shows an error. There is no automatic mock/demo mode,
 including when the old `CONSOLE_USE_MOCK` setting is true. Test fixtures are
@@ -66,13 +68,16 @@ isolated to the regression suite.
 ```powershell
 npm test
 npm run typecheck
+npm run check:proxy
 npm run build
 ```
 
-The Docker build also runs the regression suite before bundling. Build with this
-directory as the Docker context. `SOURCE_REVISION` can label the immutable image
-with its source commit. Publish the image to the existing registry and deploy by
-digest; do not recreate the Gateway or its Entra registrations for a UI update.
+The proxy check verifies dynamic Docker DNS resolution and the preserved API,
+health, and documentation forwarding headers. The Docker build runs that check
+and the regression suite before bundling. Build with this directory as the Docker
+context. `SOURCE_REVISION` can label the immutable image with its source commit.
+Publish the image to the existing registry and deploy by digest; do not recreate
+the Gateway or its Entra registrations for a UI update.
 
 The supplied Compose deployment builds `linux/amd64` images. The Node build stage
 runs natively; its output is static assets served by the Console image.

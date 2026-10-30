@@ -178,6 +178,14 @@ errors classified as transient are retried with bounded backoff. A non-transient
 error or exhausted retry window fails startup; the service must not remain marked
 ready or accept traffic without a usable database.
 
+The Console reverse proxy must resolve the Compose `api` service dynamically
+through Docker's embedded DNS. It must not retain an API container address from
+Console startup for the lifetime of the Console process. Recreating or replacing
+the API may cause a bounded transient proxy failure while the service is absent,
+but the same running Console container must recover when the API becomes healthy;
+routes, request paths, query strings, authorization headers, and host handling
+remain unchanged.
+
 The local topology deliberately uses loopback listeners and development service
 credentials. The `vault` container is currently an unwired development auxiliary;
 the application does not read secrets from it. Bootstrap instead writes ignored
@@ -370,11 +378,28 @@ Agent, interaction, prompt, user, time, policy evidence, expiration, replay, or
 protection-state mismatches fail.
 
 The stable protection-context hash binds the canonical durable individual-policy
-assignment digest and effective agent settings. Catalog retrieval and acceptance
-times are management-inventory metadata and are not part of runtime binding
-identity. A newly accepted snapshot with identical tenant, policy revision,
-assignment, and target scope therefore preserves an in-flight receipt. A refresh
-that proves a semantic assignment or scope change marks the assignment
+assignment digest and effective agent settings. `AgentPolicyAssignments` stores
+the signed connector's internal `definitionRevision` in `AssignedRevision`.
+Reconciliation separately requires the accepted catalog's
+`AllAccountsApplicationIds` to contain the exact individual identity, proving an
+Applications/Entra/Individual location with one Tenant/All inclusion and no
+exclusions. The internal revision covers policy identity, mode, enforcement
+planes, and rule definition. It excludes every location/target, provider
+timestamp, and the policy display name. Its canonicalizer sorts dictionary keys
+and only known outer set-like collections; it preserves the order of unknown
+nested arrays because that order may be semantic.
+
+The catalog's public whole-scope `revision`, stored in `ReviewedRevision`, is
+review/write concurrency evidence and is not runtime binding identity. It retains
+the exact deployed legacy digest shape, including policy and rule provider
+timestamps and legacy array behavior, so persisted pre-upgrade revisions
+remain comparable.
+
+A newly accepted snapshot therefore preserves an in-flight receipt when the
+assigned identity is still targeted and its internal `definitionRevision` is
+unchanged, even if another individually reviewed identity was added to the same
+policy. Removal of the assigned identity, narrowing or exclusion, material
+rule/mode/definition change, or incompatibility marks the assignment
 `NeedsAttention`, advances the affected protection revision, and invalidates the
 receipt. Missing required live runtime evidence still fails closed independently.
 
@@ -404,33 +429,74 @@ The catalog host:
 - reads the scope back before publishing an authenticated result.
 
 The API validates result authentication, tenant, connector identity, operation,
-request hash, action, generation, timestamps, deadline, schema, unique IDs, and
-canonical policy revisions before accepting a new catalog into PostgreSQL. The
-catalog GET plus assignment review and confirmation read only that accepted
+request hash, action, generation, timestamps, deadline, schema, unique IDs,
+public whole-scope `revision` values, and internal `definitionRevision` values
+before accepting a new catalog into PostgreSQL. The catalog GET exposes only the
+public revision; assignment review and confirmation read only that accepted
 snapshot. The X.509-
 signed file produced during bootstrap is a one-time migration source when the new
 tables are empty; it is not the ongoing catalog authority. Missing, invalid,
 wrong-tenant, or unavailable data is an error, never a successful empty catalog.
 
-The management freshness threshold is thirty days in
-`PurviewPolicyCatalogValidation.MaximumAge`. A new assignment review or
-confirmation requires an accepted catalog inside that threshold. Historical
-inventory remains visible with its retrieval time after the threshold or a failed
-refresh, and an existing durable binding does not expire merely because the
-display inventory ages. This is not the lifetime of a Purview policy,
-authentication certificate, or Graph access token.
+The last verified catalog is cached in PostgreSQL until a successful explicit
+**Manual sync** replaces it. It has no age-based expiry. Selection, assignment
+review, and confirmation use that accepted cache even while a sync is running or
+management connectivity is degraded. The Console shows its last sync time and
+retains it on failure. Assignment execution still reads the selected policy live,
+checks the reviewed revision and exact target, and verifies mutation readback.
 
-The thirty-day reuse threshold does not weaken connector-result validation. A
+Persistent catalog reuse does not weaken connector-result validation. A
 successful on-demand provider operation must still return catalog evidence
 retrieved within the separate fifteen-minute connector-result window and bound to
 that exact operation, generation, request hash, tenant, connector, and deadline.
 
 Snapshot acceptance time and catalog retrieval time do not themselves change
 policy identity. Runtime binding digests are derived from durable confirmed
-assignment evidence. A refresh that discovers a removed, revised, incompatible,
-or no-longer-targeted assigned policy changes that assignment to
-`NeedsAttention`, advances the affected registration's protection revision, and
-therefore invalidates affected runtime evidence.
+assignment evidence. Public `revision` retains the deployed legacy whole-scope
+algorithm over the enforcement definition, policy display name, complete
+locations/target scope, provider policy/rule timestamps, and legacy array
+behavior. The client submits it for review and it is stored in `ReviewedRevision`
+to reject stale writes. Internal `definitionRevision` excludes all
+locations/targets, provider timestamps, and policy display name; a successful
+signed assignment result supplies it for `AssignedRevision`. Its stable ordering
+normalizes only known outer sets and preserves unknown nested-array order. Exact
+all-accounts evidence for the assigned identity is checked separately.
+
+Consequently, adding a separately reviewed identity changes public `revision` but
+does not change an existing assignment or its protection revision. A refresh that
+discovers a changed `definitionRevision`, removed exact target, narrowing or
+exclusion, or incompatibility changes that assignment to `NeedsAttention`,
+advances the affected registration's protection revision, and invalidates its
+runtime evidence. During upgrade, a legacy public digest already stored in
+`AssignedRevision` is rebased to the current internal `definitionRevision` only
+when it exactly equals the newly read public revision and the exact target and
+compatibility checks pass; the rebase does not advance protection revision.
+
+Assignment-result validation is isolated per pending operation. A signed legacy or
+malformed result that lacks required revision evidence becomes a terminal
+`ASSIGNMENT_RESULT_INVALID` failure for that operation. The evidence file is
+retained, no success or provider retry is inferred, and later pending assignments
+continue independently. An oversized result is rejected at the same per-operation
+boundary before its contents are read. `ASSIGNMENT_RESULT_INVALID` identifies an
+incompatibility between the Catalog Host or assignment transport evidence and the
+current Gateway contract. The operator must inspect connector and operation status
+and repair the bootstrap-owned Catalog Host assignment transport before starting a
+new catalog refresh or assignment review. The Console must not recommend an
+immediate retry or resubmission for this failure.
+
+Catalog acceptance requires explicit exact-target evidence for every policy.
+`IndividualApplicationIds` must be non-null and unique;
+`AllAccountsApplicationIds` must be non-null, unique, and a subset of the
+individual IDs. A signed catalog that fails these checks cannot replace the prior
+snapshot or copy malformed values into accepted catalog state; the failed refresh
+is still recorded in connector status. Catalog publication must preserve every raw
+application-location occurrence in these arrays until validation and must never
+deduplicate repeated IDs first. Multiple locations for the same agent, including
+an exact all-accounts location plus a narrower location, are invalid duplicate
+evidence and fail closed. Connector envelope verification rejects
+null or blank payload and MAC fields centrally. Malformed heartbeat evidence is
+ignored, while a malformed connector result terminates only its bound operation as
+`PURVIEW_CONNECTOR_RESULT_INVALID` and preserves the previously accepted catalog.
 
 The Windows scheduled task starts one headless listener when the certificate-
 owning user signs in. Its only trigger is that user logon: it has no repetition
@@ -439,10 +505,16 @@ process must be windowless and must never display a terminal to the interactive
 user. Idle polling and heartbeat, page/GET access, and ordinary API, Docker, or
 listener restart do not create provider work. Restart recovery may resume an
 already accepted, unexpired operation. Only an accepted Connect, Reconnect,
-Policy Refresh, or assignment operation starts bounded provider work. Each provider invocation has a six-minute deadline;
+Manual sync, or assignment operation starts bounded provider work. Each provider invocation has a six-minute deadline;
 connector operations expire after ten minutes and reviewed assignment confirmation
 has a fifteen-minute window. Unknown mutation outcomes never authorize an
 automatic duplicate mutation.
+
+After authenticating and validating a result's operation binding, completion after
+the original deadline is `TimedOut`, including a timeout result written during
+child-process cancellation. The dispatcher records its digest and preserves the
+accepted catalog. Invalid authentication or binding still produces
+`PURVIEW_CONNECTOR_RESULT_INVALID`; a late result never authorizes catalog acceptance.
 
 The Console polls an accepted connector operation while the authoritative API
 returns `Pending` or `Running` with polling recommended. Repeated unchanged status,
@@ -476,11 +548,17 @@ restores only this liveness-induced state (`Connected` with a snapshot,
 
 ### 11.4 Purview assignment
 
-An administrator reviews `{policyId, revision}` for one active agent. Confirmation
-binds the administrator, tenant, agent registration, individual identity,
-blueprint relationship, current protection revision, policy, and canonical
-provider revision. The assignment transport uses authenticated request and result
-domains. A provider revision change requires a new review.
+An administrator reviews `{policyId, revision}` for one active agent, where the
+client-submitted `revision` is the catalog's public whole-scope review/write digest.
+The server stores it in the existing `ReviewedRevision` field. Confirmation binds
+the administrator, tenant, agent registration, individual identity, blueprint
+relationship, current protection revision, policy, and reviewed revision. The
+assignment transport uses authenticated request and result domains. The host
+rejects a public-revision mismatch before mutation. A successful signed result
+returns the post-readback public `revision` and internal `definitionRevision`; the
+application stores `definitionRevision` in the existing `AssignedRevision` field.
+No new API field or database column is required. Later unrelated target additions
+do not invalidate that durable binding.
 
 Assignment states distinguish review, application, readback confirmation, runtime
 readiness, observed allow, observed DLP block, conflict, and failure. The UI must
@@ -859,7 +937,7 @@ The Console must provide:
 - detail tabs for Prompt Shields, Data protection, Identity, API key, Activity,
   and Test Agent;
 - policy catalog and per-agent assignment with explicit progress and failure;
-- Purview connection diagnostics plus administrator-only Connect, Policy Refresh,
+- Purview connection diagnostics plus administrator-only Connect, Manual sync,
   retry, and reconnect actions over durable operations;
 - bulk Manage Agents actions for Disable, Enable, and confirmed deletion;
 - persistent light/dark theme;
@@ -868,10 +946,9 @@ The Console must provide:
   animation;
 - background refresh indicators that preserve previously confirmed content rather
   than replacing it with a blank loading state;
-- read-only display of the previous accepted Purview catalog while connection
-  management is unavailable, a refresh is active, or the thirty-day
-  management freshness limit has elapsed; assignment review remains disabled in
-  those states;
+- continued selection and review from the last accepted Purview catalog regardless
+  of age, active sync, or unavailable management; no cached catalog is replaced
+  until an explicit sync succeeds;
 - automatic replacement of an open agent page's catalog when a newer accepted
   revision is observed, including removal of an obsolete stale-inventory error
   before assignment review becomes available again;
@@ -891,13 +968,15 @@ failed, partial, and unconfirmed downstream processing.
 ## 16. Reliability and failure semantics
 
 - Docker services restart with Docker under `unless-stopped`.
+- The running Console re-resolves the Compose API service after API container
+  replacement and recovers without a Console restart.
 - Database, broker, and object-store dependencies have health checks.
 - Outbox state survives API failure between database commit and publish.
 - Provider requests have bounded timeouts and cancellation.
 - Unavailable required protection fails closed.
-- Invalid accepted Purview catalogs are errors, never empty success. An aged
-  accepted catalog remains dated display evidence but cannot authorize a new
-  assignment review or confirmation until refreshed.
+- Invalid accepted Purview catalogs are errors, never empty success. Accepted
+  catalogs have no age-based expiry; assignment execution verifies the selected
+  policy live before mutation.
 - Unknown Registry or assignment mutation outcomes remain reconcilable and are
   not blindly retried.
 - Provider throttling is surfaced as a temporary, unconfirmed state; Registry
@@ -959,18 +1038,25 @@ A release is complete only when the applicable checks demonstrate:
    retains the visibly dated previous snapshot.
 10. A reviewed policy assignment targets one individual agent identity, preserves
     unrelated scope, and is confirmed by readback.
+    Adding a second individually reviewed identity to that policy preserves the
+    first assignment and its protection revision when the first identity remains
+    targeted and the enforcement definition is unchanged. Removing or excluding
+    the first identity, narrowing its scope, or changing material enforcement
+    semantics moves only the affected assignment to `NeedsAttention`.
 11. A normal prompt is allowed, a matching synthetic-sensitive prompt is blocked,
     and a same-blueprint sibling is tested independently.
 12. Allowed receipt-bound interactions and activities are durably accepted and
     processed.
 13. Agent 365 observability export reports per-span routing success and can be
     found by agent application ID after downstream ingestion delay.
-14. Docker restart restores the Compose services and Windows host sign-in resumes
-    the connector listener without starting an unsolicited catalog read.
-15. During Purview refresh, degraded/disconnected management, or an aged accepted
-    snapshot, prior inventory remains visibly dated and read-only; assignment
-    review is unavailable until a newer fresh verified snapshot is loaded, at
-    which point obsolete stale-inventory feedback is cleared.
+14. Docker restart restores the Compose services, a running Console proxy recovers
+    after API container recreation without its own restart, and Windows host
+    sign-in resumes the connector listener without starting an unsolicited catalog
+    read.
+15. The last accepted catalog remains usable for selection and review regardless
+    of age, active sync, or degraded/disconnected management. Only successful
+    manual sync replaces it; live revision and exact-target checks still protect
+    assignment execution.
 16. Generated OpenAPI, checked-in OpenAPI, README, this specification, and detailed
     architecture documents agree with the implementation.
 17. The standalone Python sample proves the real boundary with any operator-selected
@@ -1053,7 +1139,7 @@ skip, not a false pass. Live Purview enforcement uses the explicitly gated
 ### 21.1 Local manual-refresh increment
 
 The local Windows implementation provides the initial catalog acceptance,
-administrator-triggered **Connect** and **Policy Refresh**, durable PostgreSQL
+administrator-triggered **Connect** and **Manual sync**, durable PostgreSQL
 operations and snapshots, the authenticated headless listener transport, bounded
 Console polling, assignment reconciliation, and runtime independence from display-
 catalog age described above. The focused design and test matrix are in

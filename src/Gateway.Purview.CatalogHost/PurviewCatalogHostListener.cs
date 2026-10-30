@@ -14,7 +14,11 @@ public sealed record CatalogHostIdentity(
     string CertificateThumbprint,
     bool AccessVerified);
 
-public sealed record CatalogHostAssignmentRead(bool Assigned, string? Revision, string? FailureCode);
+public sealed record CatalogHostAssignmentRead(
+    bool Assigned,
+    string? Revision,
+    string? DefinitionRevision,
+    string? FailureCode);
 
 public interface IPurviewCatalogHostExecutor
 {
@@ -458,7 +462,7 @@ public sealed class PurviewCatalogHostListener
                 }
                 catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
-                    read = new(false, null, "ASSIGNMENT_OUTCOME_UNCONFIRMED");
+                    read = new(false, null, null, "ASSIGNMENT_OUTCOME_UNCONFIRMED");
                 }
 
                 var response = new PolicyAssignmentResult(
@@ -469,8 +473,10 @@ public sealed class PurviewCatalogHostListener
                     PolicyAssignmentProtocol.Digest(request),
                     read.Assigned,
                     read.Revision,
+                    read.DefinitionRevision,
                     read.FailureCode,
                     RequireUtc(_utcNow()));
+                PolicyAssignmentProtocol.Validate(response, request, RequireUtc(_utcNow()));
                 await PolicyAssignmentProtocol.WriteAtomicAsync(
                     resultPath,
                     PolicyAssignmentProtocol.Sign(response, _authenticationKey, "result"),

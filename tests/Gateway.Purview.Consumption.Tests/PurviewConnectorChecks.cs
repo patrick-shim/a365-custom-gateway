@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using Gateway.Api.Infrastructure;
+using Gateway.Domain.Entities;
 using Gateway.Purview;
 using Gateway.Purview.CatalogHost;
 
@@ -53,6 +55,24 @@ static class PurviewConnectorChecks
             var heartbeat = PurviewConnectorProtocol.Verify<PurviewConnectorHeartbeat>(
                 await File.ReadAllTextAsync(heartbeatPath), key, PurviewConnectorProtocol.HeartbeatDomain);
             PurviewConnectorProtocol.ValidateHeartbeat(heartbeat, tenantId, connectorId, now);
+            foreach (var malformedEnvelope in new[]
+            {
+                "{\"payload\":null,\"mac\":null}",
+                "{\"payload\":\" \",\"mac\":\" \"}"
+            })
+            {
+                try
+                {
+                    PurviewConnectorProtocol.Verify<PurviewConnectorHeartbeat>(
+                        malformedEnvelope, key, PurviewConnectorProtocol.HeartbeatDomain);
+                    throw new Exception("A connector heartbeat without authentication evidence was accepted.");
+                }
+                catch (CryptographicException) { }
+            }
+            Check(PurviewConnectorProtocol.Verify<PurviewConnectorHeartbeat>(
+                      await File.ReadAllTextAsync(heartbeatPath), key,
+                      PurviewConnectorProtocol.HeartbeatDomain) == heartbeat,
+                "A malformed heartbeat prevented later authenticated heartbeat processing.");
 
             // A crash after the durable Running commit but before filesystem
             // publication can leave a still-live command to be republished more
@@ -78,6 +98,20 @@ static class PurviewConnectorChecks
             var result = PurviewConnectorProtocol.Verify<PurviewConnectorResult>(
                 await File.ReadAllTextAsync(resultPath), key, PurviewConnectorProtocol.ResultDomain);
             PurviewConnectorProtocol.ValidateResult(result, command, tenantId, connectorId, now);
+            try
+            {
+                PurviewConnectorProtocol.Verify<PurviewConnectorResult>(
+                    "{\"payload\":null,\"mac\":null}", key, PurviewConnectorProtocol.ResultDomain);
+                throw new Exception("A connector result without authentication evidence was accepted.");
+            }
+            catch (CryptographicException) { }
+            var resultAfterMalformed = PurviewConnectorProtocol.Verify<PurviewConnectorResult>(
+                await File.ReadAllTextAsync(resultPath), key,
+                PurviewConnectorProtocol.ResultDomain);
+            Check(resultAfterMalformed.OperationId == result.OperationId &&
+                  resultAfterMalformed.Status == result.Status &&
+                  resultAfterMalformed.CatalogHash == result.CatalogHash,
+                "A malformed result prevented later authenticated result processing.");
             Check(result.Status == "Succeeded" && result.Catalog is not null,
                 "Refresh result did not carry authenticated catalog evidence.");
             var acceptedCatalog = result.Catalog ?? throw new Exception("Refresh catalog evidence was missing.");
@@ -187,8 +221,124 @@ static class PurviewConnectorChecks
                 await File.ReadAllTextAsync(Path.Combine(assignmentDirectory, $"{assignment.OperationId:D}.result.json")),
                 key,
                 "result");
-            Check(assignmentResult.Assigned && assignmentResult.PolicyId == assignment.PolicyId,
+            PolicyAssignmentProtocol.Validate(assignmentResult, assignment, now);
+            Check(assignmentResult.Assigned && assignmentResult.PolicyId == assignment.PolicyId &&
+                  assignmentResult.Revision == new string('e', 64) &&
+                  assignmentResult.DefinitionRevision == new string('f', 64),
                 "Assignment result was not bound to the selected policy.");
+            foreach (var invalidAssignmentResult in new[]
+            {
+                assignmentResult with { Revision = null },
+                assignmentResult with { DefinitionRevision = null },
+                assignmentResult with { DefinitionRevision = new string('A', 64) },
+                assignmentResult with { ReadAtUtc = assignment.ExpiresAtUtc.AddSeconds(1) }
+            })
+            {
+                try
+                {
+                    PolicyAssignmentProtocol.Validate(invalidAssignmentResult, assignment, now);
+                    throw new Exception("An assignment result with incomplete or late evidence was accepted.");
+                }
+                catch (InvalidOperationException) { }
+            }
+
+            var legacySuccess = new
+            {
+                assignmentResult.OperationId,
+                assignmentResult.TenantId,
+                assignmentResult.AgentIdentityId,
+                assignmentResult.PolicyId,
+                assignmentResult.RequestDigest,
+                Assigned = true,
+                Revision = new string('e', 64),
+                FailureCode = (string?)null,
+                ReadAtUtc = now
+            };
+            var legacyRow = new AgentPolicyAssignment
+            {
+                Id = assignment.OperationId,
+                Status = "Pending",
+                ConfirmedAtUtc = now.AddSeconds(-1)
+            };
+            var laterRequest = assignment with { OperationId = Guid.NewGuid() };
+            var laterResult = assignmentResult with
+            {
+                OperationId = laterRequest.OperationId,
+                RequestDigest = PolicyAssignmentProtocol.Digest(laterRequest)
+            };
+            var malformedRequest = assignment with { OperationId = Guid.NewGuid() };
+            var malformedRow = new AgentPolicyAssignment
+            {
+                Id = malformedRequest.OperationId,
+                Status = "Pending",
+                ConfirmedAtUtc = now.AddSeconds(-1)
+            };
+            var laterRow = new AgentPolicyAssignment
+            {
+                Id = laterRequest.OperationId,
+                Status = "Pending",
+                ConfirmedAtUtc = now.AddSeconds(-1)
+            };
+            var queue = new[]
+            {
+                (Row: legacyRow, Request: assignment,
+                    Envelope: PolicyAssignmentProtocol.Sign(legacySuccess, key, "result")),
+                (Row: malformedRow, Request: malformedRequest,
+                    Envelope: "{\"payload\":null,\"mac\":null}"),
+                (Row: laterRow, Request: laterRequest,
+                    Envelope: PolicyAssignmentProtocol.Sign(laterResult, key, "result"))
+            };
+            var outcomes = queue.Select(item => AgentPolicyAssignmentWorker.TryApplyAssignmentResult(
+                item.Row,
+                item.Request,
+                item.Envelope,
+                key,
+                now)).ToArray();
+            Check(!outcomes[0] && legacyRow.Status == "Failed" &&
+                  legacyRow.FailureCode == "ASSIGNMENT_RESULT_INVALID" &&
+                  !outcomes[1] && malformedRow.Status == "Failed" &&
+                  malformedRow.FailureCode == "ASSIGNMENT_RESULT_INVALID" &&
+                  outcomes[2] && laterRow.Status == "Assigned" &&
+                  laterRow.AssignedRevision == laterResult.DefinitionRevision,
+                "An invalid assignment result poisoned the queue or allowed an unconfirmed success.");
+
+            var oversizedRequest = assignment with { OperationId = Guid.NewGuid() };
+            var oversizedRow = new AgentPolicyAssignment
+            {
+                Id = oversizedRequest.OperationId,
+                Status = "Pending",
+                ConfirmedAtUtc = now.AddSeconds(-1)
+            };
+            var oversizedPath = Path.Combine(
+                assignmentDirectory, $"{oversizedRequest.OperationId:D}.oversized.result.json");
+            await File.WriteAllTextAsync(oversizedPath, new string('x', 32_769));
+            var validFileRequest = assignment with { OperationId = Guid.NewGuid() };
+            var validFileResult = assignmentResult with
+            {
+                OperationId = validFileRequest.OperationId,
+                RequestDigest = PolicyAssignmentProtocol.Digest(validFileRequest)
+            };
+            var validFileRow = new AgentPolicyAssignment
+            {
+                Id = validFileRequest.OperationId,
+                Status = "Pending",
+                ConfirmedAtUtc = now.AddSeconds(-1)
+            };
+            var validFilePath = Path.Combine(
+                assignmentDirectory, $"{validFileRequest.OperationId:D}.valid.result.json");
+            await PolicyAssignmentProtocol.WriteAtomicAsync(
+                validFilePath,
+                PolicyAssignmentProtocol.Sign(validFileResult, key, "result"),
+                default);
+            var oversizedAccepted = await AgentPolicyAssignmentWorker.TryApplyAssignmentResultFileAsync(
+                oversizedRow, oversizedRequest, oversizedPath, key, now, default);
+            var validFileAccepted = await AgentPolicyAssignmentWorker.TryApplyAssignmentResultFileAsync(
+                validFileRow, validFileRequest, validFilePath, key, now, default);
+            Check(!oversizedAccepted && oversizedRow.Status == "Failed" &&
+                  oversizedRow.FailureCode == "ASSIGNMENT_RESULT_INVALID" && File.Exists(oversizedPath) &&
+                  validFileAccepted && validFileRow.Status == "Assigned" &&
+                  validFileRow.AssignedRevision == validFileResult.DefinitionRevision,
+                "An oversized assignment result poisoned the file queue or removed provider evidence.");
 
             try
             {
@@ -229,6 +379,7 @@ static class PurviewConnectorChecks
         {
             CatalogReads++;
             AfterCatalogRead?.Invoke();
+            var applicationId = Guid.NewGuid();
             return Task.FromResult(new PurviewPolicyCatalog(
                 tenantId,
                 DateTimeOffset.UtcNow,
@@ -237,9 +388,11 @@ static class PurviewConnectorChecks
                     "Existing policy",
                     "Enable",
                     ["Application"],
-                    [Guid.NewGuid()],
+                    [applicationId],
                     true,
-                    new string('d', 64))]));
+                    new string('d', 64),
+                    new string('c', 64),
+                    [applicationId])]));
         }
 
         public Task<CatalogHostAssignmentRead> ApplyAssignmentAsync(
@@ -247,7 +400,11 @@ static class PurviewConnectorChecks
             CancellationToken cancellationToken)
         {
             AssignmentWrites++;
-            return Task.FromResult(new CatalogHostAssignmentRead(true, new string('e', 64), null));
+            return Task.FromResult(new CatalogHostAssignmentRead(
+                true,
+                new string('e', 64),
+                new string('f', 64),
+                null));
         }
     }
 }

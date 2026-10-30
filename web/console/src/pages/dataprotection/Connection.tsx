@@ -138,7 +138,7 @@ export function Connection() {
               icon={pending ? <Spinner size="tiny" /> : undefined} onClick={() => start("refresh")}>
               {pending ? "Policy refresh in progress…" : primary.label}
             </Button> : <Button appearance="primary" disabled icon={<Spinner size="tiny" />}>{primary.label}</Button>}
-          <Caption1>Manual refresh mode · no scheduled catalog refresh</Caption1>
+          <Caption1>Policies stay saved locally until the next successful manual sync.</Caption1>
         </div>
 
         {confirmationOpen && <Card className="purview-confirmation" aria-label="Confirm Purview connection">
@@ -263,9 +263,9 @@ function actionFor(state: PurviewConnection["state"] | undefined): { kind: "conn
   switch (state) {
     case "NotConfigured": return { kind: "connect", label: "Connect to Purview" };
     case "Connecting": return { kind: "progress", label: "Connecting…" };
-    case "Connected": return { kind: "refresh", label: "Policy Refresh" };
+    case "Connected": return { kind: "refresh", label: "Manual sync" };
     case "Refreshing": return { kind: "progress", label: "Policy refresh in progress…" };
-    case "Degraded": return { kind: "refresh", label: "Retry Policy Refresh" };
+    case "Degraded": return { kind: "refresh", label: "Retry manual sync" };
     case "Disconnected": return { kind: "connect", label: "Reconnect" };
     default: return { kind: "progress", label: "Loading…" };
   }
@@ -275,9 +275,9 @@ function stateDescription(value: PurviewConnection): string {
   switch (value.state) {
     case "NotConfigured": return "Bootstrap-owned Purview settings have not been verified. Connect once to retrieve the first catalog.";
     case "Connecting": return "The Gateway is verifying the installed connector, identity, permissions, tenant, and first catalog.";
-    case "Connected": return "The connector is ready. Retrieve policy additions or changes only when you choose Policy Refresh.";
+    case "Connected": return "Your saved policy list is ready. Choose Manual sync when you want the latest policies from Purview.";
     case "Refreshing": return "A manual policy refresh is running. The previous verified snapshot remains available while it completes.";
-    case "Degraded": return "The last management operation failed, but the previous verified catalog remains visible.";
+    case "Degraded": return "The last sync did not complete. Your saved policy list is still available to use.";
     case "Disconnected": return "The Gateway cannot currently run Purview management operations. Review the repair guidance before reconnecting.";
   }
 }

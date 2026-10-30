@@ -135,7 +135,7 @@ internal sealed class PurviewConnectorStore(
             throw new ConflictException(
                 submission.Type == PurviewConnectorOperationType.RefreshCatalog
                     ? "Connect the Purview connector before requesting a policy refresh."
-                    : "The Purview connector is already configured. Use Policy Refresh for an existing connection.",
+                    : "The Purview connector is already configured. Use Manual sync for an existing connection.",
                 ErrorCodes.PURVIEW_CONNECTOR_OPERATION_CONFLICT);
         }
 

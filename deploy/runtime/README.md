@@ -21,7 +21,10 @@ Compose dependency health gates order a normal `up`, while Docker engine restore
 may restart existing containers independently. The API and worker therefore retry
 transient PostgreSQL startup/recovery failures for a bounded period. Use the API
 health and readiness endpoints to assess service state; container `Up` status
-alone does not prove that the API is listening.
+alone does not prove that the API is listening. The Console proxy resolves `api`
+through Docker's embedded DNS with a five-second cache, so it follows a recreated
+API container without being restarted. A request can fail temporarily while the
+API is absent or becoming healthy.
 
 This is a development topology with development service credentials. Vault runs
 in development mode but is not wired into the application; bootstrap currently
@@ -31,7 +34,7 @@ infrastructure configuration appropriate to their environment. The Windows
 Purview connector listener is managed by bootstrap, outside Compose. The API
 mounts its authenticated connector/assignment transports, but PostgreSQL owns
 accepted connection operations and catalog snapshots. The listener is started by
-a logon-only task and contacts Purview only for explicit Connect, Policy Refresh,
+a logon-only task and contacts Purview only for explicit Connect, Manual sync,
 or assignment work; it has no periodic catalog trigger.
 
 For local API debugging, `dotnet run --project src/Gateway.Api --launch-profile runtime` loads `appsettings.Runtime.json`; supply the deployment-specific identity and provider settings securely. Avoid running a second debugging worker against the active deployment's queue. See [validation](../../tests/README.md) for isolated database and broker tests.

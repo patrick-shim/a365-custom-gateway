@@ -123,7 +123,7 @@ the task has exactly one logon trigger and no repeating, minute-based, hourly,
 calendar, or other time trigger. Both the listener and each bounded provider child
 start without a visible console window. Bootstrap supplies its already verified
 initial catalog once. Later provider reads occur only after a Gateway Administrator
-selects **Connect**, **Reconnect**, or **Policy Refresh**. Page loads, GET requests, idle
+selects **Connect**, **Reconnect**, or **Manual sync**. Page loads, GET requests, idle
 heartbeats, and ordinary API, Docker, or listener restarts do not create provider
 work. Restart recovery may resume only an already accepted, unexpired operation.
 The Console keeps reading that durable operation while the API reports it as live;
@@ -140,10 +140,57 @@ state, and cannot create a second connector operation or provider read.
 The API accepts authenticated connector results into PostgreSQL. That accepted
 snapshot, rather than the mutable transport file, is the catalog authority used
 by policy listing and assignment review. A failed refresh keeps the previous
-accepted snapshot and marks the connection degraded. A successful refresh also
-reconciles durable assignments; a removed, changed, incompatible, or no-longer-
-targeted policy becomes **Needs attention** and advances only the affected agent's
-protection revision.
+accepted snapshot and marks the connection degraded.
+
+The Gateway keeps two policy digests separate. The catalog's public `revision`
+uses the exact deployed legacy digest: policy identity and display name, complete
+location scope, mode, enforcement planes, rules, provider policy/rule timestamps,
+and legacy array behavior. The Console submits it with assignment review
+so a stale write cannot overwrite another administrator's scope change. That
+legacy shape is retained so existing installations can recognize persisted
+pre-upgrade revisions safely.
+
+The signed connector catalog also carries an internal `definitionRevision` over
+the policy identity, mode, planes, and rule definition. It excludes all locations
+and targets, provider timestamps, and the policy display name. It sorts only the
+known outer set-like collections and preserves unknown nested-array order, then
+becomes the durable assignment identity after confirmed readback.
+
+Adding another individually reviewed agent target changes public `revision`, but
+does not invalidate an existing agent whose `definitionRevision` is unchanged and
+whose exact application location still grants all accounts without exclusions.
+Removing that exact target, narrowing or excluding it, changing material
+enforcement semantics, or making the policy incompatible marks only the affected
+assignment **Needs attention** and advances that agent's protection revision.
+An authenticated assignment-result file that is legacy, incomplete, or otherwise
+invalid terminates only its matching pending operation as unconfirmed. The Gateway
+does not infer success, delete the evidence, retry the provider write, or let that
+file prevent later assignments from being processed. This includes an oversized
+result file; its failure is contained to that operation before the file is read.
+`ASSIGNMENT_RESULT_INVALID` means the Catalog Host or assignment transport produced
+evidence that is incompatible with the current Gateway contract. Inspect the
+connector and operation status, then repair the bootstrap-owned Catalog Host
+assignment transport before refreshing the catalog or reviewing another
+assignment. Immediate retry or resubmission is not a repair path.
+
+Every accepted policy must provide complete exact-scope evidence: unique
+individual application IDs and a non-null, unique all-accounts list that is a
+subset of those individual IDs. A signed catalog that omits or contradicts that
+evidence is rejected, and the previous accepted catalog stays authoritative. The
+connection records the failed refresh without adopting any malformed catalog
+state. Connector envelopes also require nonblank authenticated payload and MAC
+fields. A malformed heartbeat is ignored; a malformed operation result safely ends
+that operation without replacing the accepted catalog. Catalog publication keeps
+every raw application-location occurrence so validation can detect duplicates; it
+never collapses repeated IDs first. Two locations for the same agent, including an
+exact all-accounts location plus a narrower location, are invalid duplicate
+evidence and fail closed.
+
+On the first compatible refresh after an upgrade, a pre-upgrade assignment can be
+rebased to `definitionRevision` without changing its protection revision only when
+its stored legacy digest exactly matches the current public revision and its exact
+all-accounts target and compatibility checks still pass. Ambiguous evidence stays
+fail closed and requires review.
 
 The listener emits an authenticated heartbeat every five seconds. If the Gateway
 misses heartbeats for thirty seconds, the Console reports the connector as
@@ -151,29 +198,36 @@ degraded while retaining the last accepted catalog, or disconnected when no
 accepted catalog exists. A newly imported bootstrap catalog receives that same
 thirty-second window for its first persisted heartbeat; an already persisted
 heartbeat is never masked by the startup window. Heartbeat recovery restores local readiness without
-reading Purview; only an explicit **Connect**/**Reconnect** or **Policy Refresh**
+reading Purview; only an explicit **Connect**/**Reconnect** or **Manual sync**
 operation retrieves policy content.
+
+A heartbeat confirms that the listener is alive, not that a refresh succeeded.
+An authenticated result completed after its original deadline reports a timeout
+and preserves the previous catalog. See the [runtime recovery guide](docs/runtime/README.md)
+when refresh work stops progressing.
 
 Docker services use `restart: unless-stopped` and return when Docker starts. The
 API and worker tolerate the short PostgreSQL recovery window that can occur when
 Docker restores all containers together; they retry transient database startup
-failures for a bounded period before stopping with a clear error.
+failures for a bounded period before stopping with a clear error. The Console's
+same-origin proxy resolves the Compose `api` service through Docker DNS while it
+is running, so replacing or recreating the API container does not require a
+Console restart. Requests can return a temporary availability error while the API
+is absent or becoming ready, then recover after the bounded DNS refresh interval.
 
-Runtime Graph scope checks and `processContent` remain automatic. Catalog age is
-visible management evidence and still requires a refresh before a new assignment
-review or confirmation, but age alone does not stop an already configured agent
-whose durable assignment and runtime evidence remain valid. See the
+Runtime Graph scope checks and `processContent` remain automatic. The last verified
+policy list is cached locally in PostgreSQL without an age limit. **Manual sync**
+retrieves policy additions or changes when the administrator chooses. See the
 [manual-refresh design and verification record](docs/spec/purview-connector-vnext.md)
 and [vNext milestones](SPEC-VNEXT.md). The local Windows M1–M5 increment is
 implemented. Server/cloud connector work (M6) remains on hold, and live tenant
 enforcement still requires the explicitly gated operator validation.
 
-While a catalog refresh is running, the connection is degraded or disconnected,
-or the accepted snapshot is older than the 30-day management freshness limit, the Console
-keeps the dated policy inventory visible as read-only evidence. It disables new
-assignment review until a fresh verified snapshot is accepted. When the accepted
-catalog revision changes, an open agent page reloads that revision and clears any
-obsolete stale-inventory warning before review is enabled again.
+The cached list remains available for selection and review during sync, after a
+sync failure, and while the connector is temporarily unavailable. Its last sync
+time stays visible. A successful manual sync replaces the list; a failure retains
+it. Applying a reviewed assignment still reads the selected policy live and checks
+its revision and exact agent target before making a change.
 
 See [SPEC.md](SPEC.md) for the normative technical specification and
 [AGENTS.md](AGENTS.md) for repository governance.
@@ -336,11 +390,14 @@ timestamp, protection revision, and current assignment evidence. It expires and
 can be consumed only once. An agent must not call its model after a block or an
 unavailable required protection response.
 
-Purview catalog freshness and policy identity are separate checks. Refreshing a
-trusted catalog with the same tenant, policy revisions, assignments, and agent
-scope advances its freshness deadline without invalidating an in-flight receipt.
-An actual policy, assignment, scope, agent setting, or protection revision change
-still invalidates the receipt and requires a new protected turn.
+Purview catalog freshness, public whole-scope `revision`, and durable internal
+`definitionRevision` are separate checks. Refreshing a trusted catalog, renaming
+the policy, or adding an unrelated exact agent target does not invalidate another
+agent's in-flight receipt when its all-accounts target remains present and its
+`definitionRevision` is unchanged. Removing that agent's target, narrowing or
+excluding it, changing its enforcement definition or compatibility, or changing
+the agent setting or protection revision invalidates the receipt and requires a
+new protected turn.
 
 Minimal PowerShell example:
 
@@ -580,7 +637,7 @@ The Console provides:
 - gateway-only bulk Disable and Enable actions;
 - confirmed permanent deregistration from this gateway and Agent 365 Registry;
 - a real API-path agent simulator with a clearly labeled simulated response;
-- Purview connection diagnostics, explicit Connect/Policy Refresh actions, and
+- Purview connection diagnostics, explicit Connect/Manual sync actions, and
   current accepted-catalog status.
 
 Disabling an agent immediately rejects new prompt, activity, batch, and

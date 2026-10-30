@@ -83,6 +83,42 @@ static class PurviewConnectorBackendChecks
                 legacyPrePersistenceCommand with { OperationId = Guid.NewGuid() }, persistedOperation),
             "Connector recovery weakened an immutable command binding.");
 
+        persistedOperation.IssuedAtUtc = now.AddMinutes(-10);
+        persistedOperation.ExpiresAtUtc = now.AddMilliseconds(-50);
+        var lateTimeout = new PurviewConnectorResult(
+            persistedOperation.Id, tenantId, connectorId, PurviewConnectorAction.RefreshCatalog,
+            persistedOperation.Generation, persistedOperation.RequestHash, "TimedOut", now,
+            null, null, "PURVIEW_CONNECTOR_OPERATION_TIMED_OUT");
+        Check(PurviewConnectorDispatcher.ValidateResultStatus(
+                lateTimeout, persistedOperation, tenantId, connectorId, now) == PurviewConnectorOperationStatus.TimedOut,
+            "Provider cancellation finishing after expiry was mislabeled as invalid evidence.");
+        var catalog = new PurviewPolicyCatalog(tenantId, now.AddSeconds(-1), []);
+        var lateSuccess = lateTimeout with
+        {
+            Status = "Succeeded", Catalog = catalog, CatalogHash = PurviewConnectorProtocol.Digest(catalog), FailureCode = null
+        };
+        Check(PurviewConnectorDispatcher.ValidateResultStatus(
+                lateSuccess, persistedOperation, tenantId, connectorId, now) == PurviewConnectorOperationStatus.TimedOut,
+            "A late successful read was eligible to replace the accepted catalog.");
+        Check(PurviewConnectorDispatcher.ValidateResultStatus(
+                lateSuccess with { CompletedAtUtc = persistedOperation.ExpiresAtUtc },
+                persistedOperation, tenantId, connectorId, now) == PurviewConnectorOperationStatus.Succeeded,
+            "A read completed within its deadline was rejected merely because polling arrived later.");
+        foreach (var invalidLateResult in new[]
+        {
+            lateTimeout with { OperationId = Guid.NewGuid() },
+            lateTimeout with { TenantId = Guid.NewGuid() },
+            lateTimeout with { ConnectorInstanceId = Guid.NewGuid() },
+            lateTimeout with { RequestHash = new string('0', 64) },
+            lateTimeout with { Generation = persistedOperation.Generation + 1 }
+        })
+        {
+            var rejected = false;
+            try { PurviewConnectorDispatcher.ValidateResultStatus(invalidLateResult, persistedOperation, tenantId, connectorId, now); }
+            catch (InvalidOperationException) { rejected = true; }
+            Check(rejected, "Deadline classification bypassed invalid result binding.");
+        }
+
         var timedOutWithoutResult = new PurviewConnectorOperation
         {
             Status = PurviewConnectorOperationStatus.TimedOut,
@@ -152,6 +188,41 @@ static class PurviewConnectorBackendChecks
               heartbeatState.State == PurviewConnectorState.Disconnected,
             "A missing heartbeat without an accepted catalog did not report a disconnected connector.");
 
+        var invalidResultState = new PurviewConnectorStateRecord
+        {
+            TenantId = tenantId,
+            ConnectorInstanceId = connectorId,
+            State = PurviewConnectorState.Refreshing,
+            CurrentOperationId = running.Id,
+            CatalogRetrievedAtUtc = now.AddDays(-1),
+            CatalogVerificationStatus = "Verified",
+            PolicyCount = 3,
+            CompatiblePolicyCount = 2,
+            IncompatiblePolicyCount = 1,
+            CreatedAtUtc = now.AddDays(-1),
+            UpdatedAtUtc = now.AddMinutes(-1),
+            RowVersion = Guid.NewGuid().ToByteArray()
+        };
+        running.Status = PurviewConnectorOperationStatus.Running;
+        var priorCatalogRetrievedAt = invalidResultState.CatalogRetrievedAtUtc;
+        PurviewConnectorDispatcher.ApplyFailureState(
+            invalidResultState,
+            running,
+            PurviewConnectorOperationStatus.NeedsAttention,
+            "PURVIEW_CONNECTOR_RESULT_INVALID",
+            now,
+            hasAcceptedCatalog: true);
+        Check(running.Status == PurviewConnectorOperationStatus.NeedsAttention &&
+              running.FailureCode == "PURVIEW_CONNECTOR_RESULT_INVALID" &&
+              invalidResultState.State == PurviewConnectorState.Degraded &&
+              invalidResultState.CurrentOperationId is null &&
+              invalidResultState.CatalogRetrievedAtUtc == priorCatalogRetrievedAt &&
+              invalidResultState.CatalogVerificationStatus == "Verified" &&
+              invalidResultState.PolicyCount == 3 &&
+              invalidResultState.CompatiblePolicyCount == 2 &&
+              invalidResultState.IncompatiblePolicyCount == 1,
+            "An invalid connector result replaced accepted catalog state or failed to terminate its operation.");
+
         foreach (var stateValue in Enum.GetValues<PurviewConnectorState>())
         {
             var canConnect = stateValue is PurviewConnectorState.NotConfigured or PurviewConnectorState.Disconnected;
@@ -163,14 +234,15 @@ static class PurviewConnectorBackendChecks
         }
 
         var agentIdentityId = Guid.NewGuid();
+        var siblingIdentityId = Guid.NewGuid();
         var policy = new PurviewExistingPolicy(
             Guid.NewGuid(), "Existing policy", "Enable", ["Application"], [agentIdentityId], true,
-            new string('a', 64), [agentIdentityId]);
+            new string('a', 64), new string('d', 64), [agentIdentityId]);
         var assignment = new AgentPolicyAssignment
         {
             PolicyId = policy.Id,
             AgentIdentityId = agentIdentityId,
-            AssignedRevision = policy.Revision,
+            AssignedRevision = policy.DefinitionRevision,
             Status = "Assigned"
         };
         Check(PurviewConnectorDispatcher.AssignmentFailure(
@@ -179,15 +251,75 @@ static class PurviewConnectorBackendChecks
         Check(PurviewConnectorDispatcher.AssignmentFailure(
                 assignment, new Dictionary<Guid, PurviewExistingPolicy>
                 {
-                    [policy.Id] = policy with { Revision = new string('b', 64) }
-                }) == "ASSIGNMENT_POLICY_REVISION_CHANGED",
-            "A changed policy revision was not marked for operator attention.");
+                    [policy.Id] = policy with
+                    {
+                        Revision = new string('b', 64),
+                        IndividualApplicationIds = [agentIdentityId, siblingIdentityId],
+                        AllAccountsApplicationIds = [agentIdentityId, siblingIdentityId]
+                    }
+                }) is null,
+            "Adding a sibling target invalidated an unchanged individual assignment.");
         Check(PurviewConnectorDispatcher.AssignmentFailure(
                 assignment, new Dictionary<Guid, PurviewExistingPolicy>
                 {
-                    [policy.Id] = policy with { AllAccountsApplicationIds = [] }
+                    [policy.Id] = policy with
+                    {
+                        Revision = new string('b', 64),
+                        IndividualApplicationIds = [siblingIdentityId],
+                        AllAccountsApplicationIds = [siblingIdentityId]
+                    }
                 }) == "ASSIGNMENT_POLICY_SCOPE_CHANGED",
             "A removed individual-agent scope was not marked for operator attention.");
+        Check(PurviewConnectorDispatcher.AssignmentFailure(
+                assignment, new Dictionary<Guid, PurviewExistingPolicy>
+                {
+                    [policy.Id] = policy with { DefinitionRevision = new string('e', 64) }
+                }) == "ASSIGNMENT_POLICY_REVISION_CHANGED",
+            "A changed enforcement-definition revision was not marked for operator attention.");
+        Check(PurviewConnectorDispatcher.AssignmentFailure(
+                assignment, new Dictionary<Guid, PurviewExistingPolicy>
+                {
+                    [policy.Id] = policy with
+                    {
+                        Mode = "Disable",
+                        DefinitionRevision = new string('e', 64)
+                    }
+                }) == "ASSIGNMENT_POLICY_INCOMPATIBLE",
+            "An incompatible policy was hidden behind a generic definition-change result.");
+
+        var legacyAssignment = new AgentPolicyAssignment
+        {
+            PolicyId = policy.Id,
+            AgentIdentityId = agentIdentityId,
+            AssignedRevision = policy.Revision,
+            Status = "Assigned"
+        };
+        Check(PurviewConnectorDispatcher.CanRebaseLegacyAssignedRevision(
+                legacyAssignment,
+                new Dictionary<Guid, PurviewExistingPolicy> { [policy.Id] = policy }),
+            "A current legacy full-scope assignment was not eligible for a safe definition-revision rebase.");
+        Check(!PurviewConnectorDispatcher.CanRebaseLegacyAssignedRevision(
+                legacyAssignment,
+                new Dictionary<Guid, PurviewExistingPolicy>
+                {
+                    [policy.Id] = policy with
+                    {
+                        IndividualApplicationIds = [siblingIdentityId],
+                        AllAccountsApplicationIds = [siblingIdentityId]
+                    }
+                }) &&
+              !PurviewConnectorDispatcher.CanRebaseLegacyAssignedRevision(
+                legacyAssignment,
+                new Dictionary<Guid, PurviewExistingPolicy>
+                {
+                    [policy.Id] = policy with { Mode = "Disable" }
+                }),
+            "Legacy revision migration bypassed exact-target or compatibility evidence.");
+        legacyAssignment.Status = "NeedsAttention";
+        Check(!PurviewConnectorDispatcher.CanRebaseLegacyAssignedRevision(
+                legacyAssignment,
+                new Dictionary<Guid, PurviewExistingPolicy> { [policy.Id] = policy }),
+            "A NeedsAttention assignment was silently eligible for restoration.");
 
         var state = new PurviewConnectorStateRecord
         {

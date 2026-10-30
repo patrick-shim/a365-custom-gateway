@@ -52,10 +52,15 @@ Keep the Compose project name stable so existing database and object-store volum
 
 The [local manual-refresh design](../spec/purview-connector-vnext.md) is the active
 source contract. The Windows task starts one headless listener at the certificate-
-owning user's logon; it has no recurring catalog trigger. **Connect** and **Policy
-Refresh** in Settings create durable operations. Page loads, status checks, idle
+owning user's logon; it has no recurring catalog trigger. **Connect** and **Manual sync** in Settings create durable operations. Page loads, status checks, idle
 heartbeat, and ordinary API, Docker, or listener restart do not create provider
 work; recovery may resume an already accepted, unexpired operation.
+
+The last verified list stays cached in PostgreSQL without age expiry and remains
+available for policy selection during sync or temporary management unavailability.
+Use **Manual sync** when you want policy additions or changes from Purview. A failed
+sync retains the saved list; applying an assignment still checks its selected
+policy live before changing the exact agent target.
 
 - `gateway.cmd status` reads saved checkpoints; `gateway.cmd verify` checks live API, database readiness and Console proxy/configuration.
 - `gateway.cmd doctor` checks dependencies and Microsoft sessions. `gateway.cmd diagnose` produces sanitized diagnostics.
@@ -66,14 +71,24 @@ work; recovery may resume an already accepted, unexpired operation.
   logon; a browser sign-in does not replace that Windows account or repair its
   certificate access. After listener health is restored, use **Check status** to
   reconcile the same operation before starting another.
+- A recent heartbeat proves listener liveness, not provider progress. If a refresh
+  repeatedly reaches its deadline without a result, inspect the exact owned Windows
+  task and its provider child before restarting that task. Reconcile pending
+  assignments first; never repeat an uncertain policy write. After the original
+  operation is terminal and listener health is restored, request one fresh refresh
+  in the Console. Authenticated late completion is a timeout and retains the prior
+  catalog; invalid authentication or binding is a separate repair condition.
 - Use [operations](../../operations/README.md) for queue and downstream-delivery boundaries.
 
 `/health` means the API process is responding. `/health/ready` checks database connectivity. Neither proves Purview enforcement, worker completion, or Microsoft destination visibility. Preserve correlation IDs and sanitized error codes for investigations; never include raw prompt content or credentials in support records.
 
 After a Docker engine restart, PostgreSQL may briefly report that it is still
 starting even though the application containers have also been restored. The API
-and worker retry this transient startup state for a bounded period. If the Console
-continues to report HTTP 502, check `docker compose ps`, `/health`, and recent API
-and worker logs. A running container without an API health response is not a
-healthy gateway. Once PostgreSQL is healthy, restarting only `api` and `worker`
-is a safe recovery step; it preserves named volumes and registration state.
+and worker retry this transient startup state for a bounded period. The Console
+proxy refreshes its Docker DNS lookup for `api` every five seconds, so it can show
+a temporary HTTP 502 while the API is absent or starting but recovers without a
+Console restart after the API becomes reachable. If a 502 persists after direct
+`/health` is successful for longer than that interval, run `gateway.cmd verify`
+and inspect recent Console and API logs. A running container without an API health
+response is not a healthy gateway. Recreating `api` or `worker` with the existing
+Compose project preserves named volumes and registration state.

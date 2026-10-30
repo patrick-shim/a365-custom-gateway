@@ -43,7 +43,7 @@ local C# host uses a one-time link, session isolation and request validation.
 No browser page performs its own cloud provisioning. Initial tenant identity,
 certificate, role, transport, and first catalog verification stay in bootstrap.
 The Console uses that exact owned configuration for operational Connect,
-Policy Refresh, diagnostics, policy selection, and individual-agent assignment.
+Manual sync, diagnostics, policy selection, and individual-agent assignment.
 
 Configuration must explicitly select `deployProfile: runtime`. The
 [example](config.example.runtime.json) documents fields; the
@@ -54,7 +54,7 @@ Gateway keys, or prompt content in checked-in configuration.
 ## Commands
 
 The [local manual-refresh design](../docs/spec/purview-connector-vnext.md) uses one
-background Windows listener and administrator-triggered Connect/Policy Refresh
+background Windows listener and administrator-triggered Connect/Manual sync
 operations. Initial setup performs one verified catalog read and hands that exact
 result to the listener for publication; it does not make a second read. The API
 imports that signed bootstrap catalog once when connector tables are empty, then

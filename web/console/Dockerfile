@@ -7,6 +7,7 @@ COPY . .
 # Fluent UI's global focus manager is shared inside jsdom. Run files serially so
 # image builds do not intermittently race while dialogs mount and unmount.
 RUN npm run check:reachability \
+    && npm run check:proxy \
     && npm test -- --reporter=dot --maxWorkers=1 --minWorkers=1 --testTimeout=15000 \
     && npm run build
 

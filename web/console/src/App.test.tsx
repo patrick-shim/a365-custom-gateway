@@ -452,9 +452,9 @@ describe("Console routes with actual API envelopes", () => {
 
   it("reads Purview connection state without starting a connector operation", async () => {
     renderApp("/settings/purview");
-    expect(await screen.findByText("The connector is ready. Retrieve policy additions or changes only when you choose Policy Refresh.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Policy Refresh" })).toBeEnabled();
-    expect(screen.getByText("Manual refresh mode · no scheduled catalog refresh")).toBeVisible();
+    expect(await screen.findByText("Your saved policy list is ready. Choose Manual sync when you want the latest policies from Purview.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Manual sync" })).toBeEnabled();
+    expect(screen.getByText("Policies stay saved locally until the next successful manual sync.")).toBeVisible();
     expect(server.requests.every(r => r.method === "GET")).toBe(true);
     expect(server.requests.filter(r => r.path === "/api/v1/protection/purview/connection")).toHaveLength(1);
   });
@@ -462,9 +462,9 @@ describe("Console routes with actual API envelopes", () => {
   it.each([
     ["NotConfigured", "Connect to Purview", false],
     ["Connecting", "Connecting…", true],
-    ["Connected", "Policy Refresh", false],
+    ["Connected", "Manual sync", false],
     ["Refreshing", "Policy refresh in progress…", true],
-    ["Degraded", "Retry Policy Refresh", false],
+    ["Degraded", "Retry manual sync", false],
     ["Disconnected", "Reconnect", false],
   ] as const)("presents the %s Purview connection state with its exact action", async (state, label, disabled) => {
     server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
@@ -519,14 +519,14 @@ describe("Console routes with actual API envelopes", () => {
       correlationId: operationId,
     }));
     renderApp("/settings/purview");
-    expect(await screen.findByText("The last management operation failed, but the previous verified catalog remains visible.")).toBeVisible();
+    expect(await screen.findByText("The last sync did not complete. Your saved policy list is still available to use.")).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("The previous verified catalog remains available");
     expect(screen.getByText("2 total · 1 compatible · 1 incompatible")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Retry Policy Refresh" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry manual sync" })).toBeEnabled();
     expect(server.requests.every(r => r.method === "GET")).toBe(true);
   });
 
-  it("suppresses duplicate Policy Refresh submissions and stops at terminal operation readback", async () => {
+  it("suppresses duplicate Manual sync submissions and stops at terminal operation readback", async () => {
     let releaseRequest!: () => void;
     const gate = new Promise<void>(resolve => { releaseRequest = resolve; });
     server.handlers.set("POST /api/v1/protection/purview/connection/refresh", async () => {
@@ -552,7 +552,7 @@ describe("Console routes with actual API envelopes", () => {
     }));
     renderApp("/settings/purview");
     const user = userEvent.setup();
-    const refresh = await screen.findByRole("button", { name: "Policy Refresh" });
+    const refresh = await screen.findByRole("button", { name: "Manual sync" });
     await user.click(refresh);
     await waitFor(() => expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1));
     expect(refresh).toBeDisabled();
@@ -715,6 +715,32 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByText("Gateway allow and block verified")).not.toBeInTheDocument();
   });
 
+  it("directs an invalid assignment result to Catalog Host transport repair without suggesting resubmission", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/purview-policies`, () => ({
+      agentId,
+      agentIdentityId: agent.agent365.agentId,
+      bindingCurrent: false,
+      allowObservedAtUtc: null,
+      blockObservedAtUtc: null,
+      items: [{
+        operationId,
+        policyId: "99999999-9999-4999-8999-999999999999",
+        policyName: "Existing DLP",
+        status: "Failed",
+        failureCode: "ASSIGNMENT_RESULT_INVALID",
+        confirmedAtUtc: "2026-10-22T10:00:00Z",
+        expiresAtUtc: "2026-10-22T10:10:00Z",
+        assignedAtUtc: null,
+      }],
+    }));
+
+    renderApp(`/agents/${agentId}?tab=data-protection`);
+
+    expect(await screen.findByText(/repair or redeploy the bootstrap-owned Purview Catalog Host assignment transport/)).toBeVisible();
+    expect(screen.getByText(/Do not retry or resubmit this assignment until that transport is repaired/)).toBeVisible();
+    expect(screen.queryByText(/Refresh the policy catalog and review again to reconcile its current scope/)).not.toBeInTheDocument();
+  });
+
   it("reviews the exact agent and policy before confirming, and does not label a pending assignment protected", async () => {
     const policyId = "99999999-9999-4999-8999-999999999999";
     const revision = "a".repeat(64);
@@ -753,12 +779,12 @@ describe("Console routes with actual API envelopes", () => {
     expect(server.requests.filter(x => x.method === "POST")).toHaveLength(2);
   });
 
-  it("keeps the previous Purview catalog view-only while a policy refresh is running", async () => {
+  it.each(["Refreshing", "Degraded", "Disconnected"])("keeps cached policy selection usable while management is %s", async state => {
     const policyId = "99999999-9999-4999-8999-999999999999";
     const retrievedAtUtc = new Date().toISOString();
     server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
       ...purviewConnection,
-      state: "Refreshing",
+      state,
       currentOperationId: operationId,
       catalogRetrievedAtUtc: retrievedAtUtc,
     }));
@@ -774,10 +800,11 @@ describe("Console routes with actual API envelopes", () => {
 
     renderApp(`/agents/${agentId}?tab=data-protection`);
 
-    expect(await screen.findByText("Policy refresh is running")).toBeVisible();
-    expect(screen.getByText("The previous saved catalog is view-only until the Gateway accepts a fresh verified snapshot.")).toBeVisible();
-    expect(screen.getByLabelText("Choose an existing policy")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    const user = userEvent.setup();
+    await screen.findByRole("option", { name: "Existing DLP" });
+    expect(screen.getByLabelText("Choose an existing policy")).toBeEnabled();
+    await user.selectOptions(screen.getByLabelText("Choose an existing policy"), policyId);
+    expect(screen.getByRole("button", { name: "Review assignment" })).toBeEnabled();
     expect(server.requests.every(request => request.method === "GET")).toBe(true);
   });
 
@@ -807,9 +834,9 @@ describe("Console routes with actual API envelopes", () => {
     expect(server.requests.every(request => request.method === "GET")).toBe(true);
   });
 
-  it("keeps an expired accepted catalog visible but unavailable for a new review", async () => {
+  it("reviews a year-old accepted catalog without requesting a sync", async () => {
     const policyId = "99999999-9999-4999-8999-999999999999";
-    const retrievedAtUtc = new Date(Date.now() - 31 * 24 * 60 * 60_000).toISOString();
+    const retrievedAtUtc = new Date(Date.now() - 365 * 24 * 60 * 60_000).toISOString();
     server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
       ...purviewConnection,
       catalogRetrievedAtUtc: retrievedAtUtc,
@@ -824,12 +851,20 @@ describe("Console routes with actual API envelopes", () => {
       }],
     }));
 
+    server.handlers.set(`POST /api/v1/agents/${agentId}/purview-policies/review`, () => ({
+      operationId, agentId, agentIdentityId: agent.agent365.agentId, policyId, policyName: "Previous DLP",
+      expiresAtUtc: new Date(Date.now() + 60000).toISOString(), effect: "Only this individual agent is added.",
+    }));
     renderApp(`/agents/${agentId}?tab=data-protection`);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("The saved policy catalog is view-only");
-    expect(screen.getByRole("option", { name: "Previous DLP" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Choose an existing policy")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Review assignment" })).toBeDisabled();
+    const user = userEvent.setup();
+    await screen.findByRole("option", { name: "Previous DLP" });
+    await user.selectOptions(screen.getByLabelText("Choose an existing policy"), policyId);
+    await user.click(screen.getByRole("button", { name: "Review assignment" }));
+    expect(await screen.findByRole("button", { name: "Apply to this agent" })).toBeEnabled();
+    const mutations = server.requests.filter(request => request.method === "POST");
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].path).toBe(`/api/v1/agents/${agentId}/purview-policies/review`);
+    expect(mutations[0].body).toEqual({ policyId, revision: "a".repeat(64) });
   });
 
   it("clears an obsolete stale-catalog warning after a newer verified catalog is loaded", async () => {

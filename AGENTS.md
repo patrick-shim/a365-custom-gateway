@@ -161,11 +161,38 @@ working tree.
 
 - Keep management-plane catalog/assignment work separate from runtime
   `processContent` evaluation.
-- Verify catalog signature, tenant, schema, freshness, completeness, uniqueness,
-  and canonical revision before use.
+- Verify catalog signature, tenant, schema, incoming-result freshness, completeness, uniqueness,
+  public whole-scope `revision`, and internal `definitionRevision` before use.
+- Keep the accepted policy list cached without age expiry until successful manual
+  sync. Age, failed sync, or connector availability must not disable cached
+  selection/review; selected-policy live revision and target checks still guard writes.
 - Do not replace a failed catalog read with an empty success or an unmarked stale
   snapshot.
-- Assignment review binds the exact policy revision and individual agent identity.
+- Assignment review binds the client-submitted public whole-scope `revision` and
+  exact individual agent identity. Store it in `ReviewedRevision`; do not add a
+  second review-concurrency field.
+- Preserve the public `revision`'s deployed legacy digest exactly for upgrade
+  compatibility. Its input includes provider policy/rule timestamps and legacy
+  array behavior. Do not modernize or reuse it as durable enforcement
+  identity.
+- The signed assignment result returns internal `definitionRevision`, which is
+  stored in `AssignedRevision` as durable enforcement identity. It excludes all
+  locations/target scope, timestamps, and the cosmetic policy display name.
+  Normalize only known outer set-like collections; preserve order in unknown
+  nested arrays because that order may be semantic.
+- Keep durable enforcement identity separate from review/write concurrency.
+  Adding another reviewed exact target to a shared policy changes public
+  whole-scope `revision` but must not invalidate an existing assignment whose
+  `definitionRevision` is unchanged and whose exact all-accounts target remains.
+- Rebase a pre-upgrade `AssignedRevision` from the legacy public digest to
+  `definitionRevision` only when it exactly matches the current public revision
+  and the assigned target and compatibility checks still pass. Do not infer a
+  safe migration from names or partial evidence.
+- Removal of the assigned identity, narrowing/exclusion, material
+  rule/mode/definition change, or incompatibility marks only the affected
+  assignment `NeedsAttention` and advances that agent's protection revision.
+  Detect removal, narrowing, and exclusion through exact assigned-target
+  all-accounts evidence, separately from `definitionRevision`.
 - Preserve every unrelated target and exclusion. Conflicting/narrow existing scope
   is an explicit conflict, not permission to rewrite the policy.
 - Unknown assignment outcomes remain unconfirmed and are reconciled with readback.
@@ -301,6 +328,12 @@ Testing requirements:
   task recovery independently.
 - When changing protection, prove normal allow, provider-specific block, and
   same-blueprint sibling behavior.
+- When changing Purview reconciliation, prove that adding a second exact target
+  preserves the first assignment, while removal, narrowing/exclusion, material
+  enforcement-definition change, and incompatibility invalidate only affected
+  assignments. Also prove the public digest remains legacy-compatible and that an
+  unknown nested-array reorder changes `definitionRevision` rather than being
+  silently normalized away.
 
 ## 11. Documentation rules
 

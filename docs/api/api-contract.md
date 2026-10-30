@@ -5,7 +5,7 @@ The current controller and request/response definitions in `src/Gateway.Api` and
 policy definitions and classifiers are managed in Purview.
 
 The local Windows Purview connector uses an explicit, asynchronous connection and
-Policy Refresh contract. It never refreshes the catalog because a page was opened,
+Manual sync contract. It never refreshes the catalog because a page was opened,
 focused, or polled. Server/cloud connector support remains deferred in the
 [vNext plan](../spec/purview-connector-vnext.md).
 
@@ -93,10 +93,10 @@ readback or has not made the record readable. This is an unconfirmed state, not
 proof of creation or failure. Refresh the operation and retry its confirmation;
 an existing attempt is reconciled by GET and the create request is not repeated.
 
-## Manual Purview connection and Policy Refresh
+## Manual Purview connection and Manual sync
 
 The Console reads durable local state and starts provider work only when a Gateway
-Administrator explicitly confirms **Connect** or chooses **Policy Refresh**.
+Administrator explicitly confirms **Connect** or chooses **Manual sync**.
 Bootstrap owns the connector identity, certificate, transport key, queue path, and
 Windows listener. These values never enter the browser or either mutation body.
 
@@ -156,22 +156,35 @@ Brief internal database contention is retried with the exact mutation identity a
 reviewed precondition; the caller still receives either the single accepted
 operation or a sanitized non-acceptance response.
 
+An authenticated, correctly bound result completed after the original operation
+deadline returns `TimedOut` with `PURVIEW_CONNECTOR_TIMED_OUT`; it cannot replace
+the accepted catalog. Invalid authentication or operation binding remains
+`NeedsAttention` with `PURVIEW_CONNECTOR_RESULT_INVALID`.
+
 ## Existing Purview policies
 
 `GET /api/v1/protection/purview/policies` returns the latest connector result that
 the Gateway authenticated and accepted into PostgreSQL: `tenantId`,
 `retrievedAtUtc`, `source: AcceptedPurviewConnectorSnapshot`, and policy `items`.
 Items include policy ID/name, provider mode, enforcement planes, individual
-application IDs, definition revision, and
+application IDs, public whole-scope `revision`, and
 `compatibility: { canAssign, reason }`.
 
 Acceptance verifies connector authentication, request/result binding, configured
-tenant, schema, completeness, uniqueness, canonical revisions, generation, and
-content hash. Missing or invalid accepted state returns a failure, never a
-successful empty catalog. A failed refresh retains the clearly dated previous
-accepted snapshot. Catalog age is display and management-review evidence; it does
-not silently remove an already confirmed runtime binding. Policy review and
-confirmation require a recently retrieved catalog and reject revision drift.
+tenant, schema, completeness, uniqueness, public `revision`, signed internal
+`definitionRevision`, generation, and content hash. Missing or invalid
+accepted state returns a failure, never a successful empty catalog. A failed
+refresh retains the clearly dated previous accepted snapshot. The cache has no
+age expiry and remains usable for review and confirmation during sync or management
+unavailability. Only successful manual sync replaces it. Review binds the cached
+public whole-scope revision; assignment execution verifies that revision live
+before mutation.
+
+The public value deliberately retains the exact deployed legacy digest contract,
+including provider policy/rule timestamps and legacy array behavior, so
+persisted pre-upgrade values remain comparable. The internal signed value excludes
+locations/targets, provider timestamps, and policy display name. It normalizes
+only known outer set-like collections and preserves unknown nested-array order.
 Catalog access or assignment success proves neither enforcement nor downstream
 visibility.
 
@@ -186,6 +199,18 @@ it preserves unrelated scope, exclusions, rules and mode. The shared blueprint
 must never substitute for that identity. Assignment completion, synchronization,
 observed enforcement and failure are separate states. The catalog host performs
 the authenticated assignment/readback; the Console polls authoritative status.
+The client submits the public whole-scope `revision` for review; the server stores
+it in `ReviewedRevision` and sends it through the authenticated assignment request.
+The internal signed assignment result contains both post-readback `revision` and
+`definitionRevision`; only the latter is stored in `AssignedRevision` as durable
+enforcement identity. The public catalog DTO and OpenAPI remain unchanged;
+`definitionRevision` exists only in signed internal connector evidence. An
+unrelated exact target changes review concurrency evidence but does not invalidate
+existing confirmed assignments.
+`ASSIGNMENT_RESULT_INVALID` is a terminal non-success result for one pending
+operation when its signed response is legacy, incomplete, malformed, or does not
+match the request. The Gateway retains that evidence, never infers success or
+retries the provider write, and continues processing later operations.
 
 There are no gateway endpoints for creating classifiers, sensitive information
 types, policy rules, or shared blueprint profiles. Those policy definitions are
@@ -211,11 +236,16 @@ content and protection context. Expired, replayed or changed-context receipts
 cannot authorize a different interaction. Prompt Shields and Purview are separate
 evaluations. An unavailable required protection service is not an allowed verdict.
 The protection-context identity uses stable durable assignment evidence. A trusted
-catalog refresh with an unchanged policy revision and target scope does not become
-a changed protection context. Display-catalog age does not expire that binding or
-an otherwise valid runtime request. Receipt lifetime, exact context binding, and
-the required live Graph protection evidence are still checked independently when
-the receipt is issued and consumed.
+catalog refresh with unchanged internal `definitionRevision` and retained exact
+all-accounts target does not become a changed protection context, even when another
+exact identity was added and public `revision` changed. Removing or excluding this
+identity, narrowing its scope, changing material rule/mode/definition semantics,
+or making the policy incompatible changes the context and advances only that
+agent's protection revision.
+Display-catalog age does not expire the binding or an otherwise valid runtime
+request. Receipt lifetime, exact context binding, and required live Graph
+protection evidence are still checked independently when the receipt is issued and
+consumed.
 
 `GET /health` and `GET /health/ready` expose service health/readiness. Deployment
 readiness alone does not establish live policy blocking or sibling isolation.

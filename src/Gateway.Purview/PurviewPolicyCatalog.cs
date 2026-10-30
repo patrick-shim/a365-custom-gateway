@@ -4,7 +4,7 @@ namespace Gateway.Purview;
 
 public sealed record PurviewExistingPolicy(Guid Id, string DisplayName, string Mode,
     string[] EnforcementPlanes, Guid[] IndividualApplicationIds, bool HasUploadTextBlock,
-    string Revision, Guid[]? AllAccountsApplicationIds = null);
+    string Revision, string DefinitionRevision, Guid[] AllAccountsApplicationIds);
 public sealed record PurviewPolicyCatalog(Guid TenantId, DateTimeOffset RetrievedAtUtc,
     IReadOnlyList<PurviewExistingPolicy> Items);
 
@@ -15,10 +15,6 @@ public interface IPurviewPolicyCatalogClient
 
 public static class PurviewPolicyCatalogValidation
 {
-    // This threshold is used for live management review, not for displaying an
-    // already authenticated inventory or for runtime protection admission.
-    public static readonly TimeSpan MaximumAge = TimeSpan.FromDays(30);
-
     // A result produced for a live connector command must still be recent. This
     // is deliberately independent of how long an accepted snapshot may be reused.
     public static readonly TimeSpan MaximumConnectorResultAge = TimeSpan.FromMinutes(15);
@@ -33,17 +29,13 @@ public static class PurviewPolicyCatalogValidation
                 x.DisplayName.Length > 256 || x.DisplayName.Any(char.IsControl) || string.IsNullOrWhiteSpace(x.Mode) ||
                 x.EnforcementPlanes is null || x.IndividualApplicationIds is null ||
                 x.IndividualApplicationIds.Any(id => id == Guid.Empty) ||
-                (x.AllAccountsApplicationIds is not null && (x.AllAccountsApplicationIds.Any(id => id == Guid.Empty || !x.IndividualApplicationIds.Contains(id)) ||
-                    x.AllAccountsApplicationIds.Distinct().Count() != x.AllAccountsApplicationIds.Length)) ||
-                x.Revision is not { Length: 64 } || !x.Revision.All(char.IsAsciiHexDigitLower)))
+                x.IndividualApplicationIds.Distinct().Count() != x.IndividualApplicationIds.Length ||
+                x.AllAccountsApplicationIds is null ||
+                x.AllAccountsApplicationIds.Any(id => id == Guid.Empty || !x.IndividualApplicationIds.Contains(id)) ||
+                x.AllAccountsApplicationIds.Distinct().Count() != x.AllAccountsApplicationIds.Length ||
+                x.Revision is not { Length: 64 } || !x.Revision.All(char.IsAsciiHexDigitLower) ||
+                x.DefinitionRevision is not { Length: 64 } || !x.DefinitionRevision.All(char.IsAsciiHexDigitLower)))
             throw new PurviewPolicyException("PURVIEW_POLICY_CATALOG_INVALID", "Purview returned an invalid policy catalog.");
-    }
-
-    public static void EnsureFreshForManagement(PurviewPolicyCatalog catalog)
-    {
-        if (catalog.RetrievedAtUtc < DateTimeOffset.UtcNow.Subtract(MaximumAge))
-            throw new PurviewPolicyException("PURVIEW_POLICY_CATALOG_REFRESH_REQUIRED",
-                "Refresh the Purview policy catalog before reviewing or confirming a policy change.");
     }
 
     public static string? Incompatibility(PurviewExistingPolicy policy) =>

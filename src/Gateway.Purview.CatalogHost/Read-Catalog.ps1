@@ -29,7 +29,7 @@ try {
         if ([string]::IsNullOrWhiteSpace($AssignmentRequestPath)) { throw 'Assignment request is required.' }
         $request = Get-Content -LiteralPath $AssignmentRequestPath -Raw | ConvertFrom-Json
         if ([guid]$request.tenantId -ne $TenantId) { throw 'Wrong assignment tenant.' }
-        $assignment = @{ assigned=$false; revision=$null; failureCode=$null }
+        $assignment = @{ assigned=$false; revision=$null; definitionRevision=$null; failureCode=$null }
         try {
             . "$PSScriptRoot/Automation/Add-PurviewIndividualTarget.ps1"
             # The assignment function re-reads the exact selected policy before
@@ -40,7 +40,9 @@ try {
             if ($policy.Count -ne 1 -or $policy[0].allAccountsApplicationIds -notcontains $request.agentIdentityId) {
                 throw 'ASSIGNMENT_READBACK_PENDING'
             }
-            $assignment.assigned = $true; $assignment.revision = $policy[0].revision
+            $assignment.assigned = $true
+            $assignment.revision = $policy[0].revision
+            $assignment.definitionRevision = $policy[0].definitionRevision
         } catch {
             $code = $_.Exception.Message
             $assignment.failureCode = if ($code -cmatch '^ASSIGNMENT_[A-Z_]+$') { $code } else { 'ASSIGNMENT_OUTCOME_UNCONFIRMED' }

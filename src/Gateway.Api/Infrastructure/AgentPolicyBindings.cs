@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using Gateway.Contracts;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
@@ -62,16 +65,17 @@ public sealed class AgentPolicyAssignmentWorker(IServiceScopeFactory scopes, IOp
                     var prefix = Path.Combine(options.Value.QueueDirectory, row.Id.ToString("D"));
                     if (File.Exists(prefix + ".result.json"))
                     {
-                        if (new FileInfo(prefix + ".result.json").Length > 32768) throw new InvalidOperationException("Assignment response exceeds bound.");
-                        var result = PolicyAssignmentProtocol.Verify<PolicyAssignmentResult>(await File.ReadAllTextAsync(prefix + ".result.json", stoppingToken), options.Value.AuthenticationKey, "result");
-                        if (result.OperationId != row.Id || result.TenantId != row.TenantId || result.AgentIdentityId != row.AgentIdentityId ||
-                            result.PolicyId != row.PolicyId || result.RequestDigest != PolicyAssignmentProtocol.Digest(request) ||
-                            result.ReadAtUtc < row.ConfirmedAtUtc || result.ReadAtUtc > DateTime.UtcNow.AddMinutes(1))
-                            throw new InvalidOperationException("Assignment response binding mismatch.");
-                        row.Status = result.Assigned ? "Assigned" : "Failed";
-                        row.FailureCode = result.FailureCode;
-                        row.AssignedAtUtc = result.Assigned ? result.ReadAtUtc : null;
-                        row.AssignedRevision = result.Assigned ? result.Revision : null;
+                        var accepted = await TryApplyAssignmentResultFileAsync(
+                            row,
+                            request,
+                            prefix + ".result.json",
+                            options.Value.AuthenticationKey,
+                            DateTime.UtcNow,
+                            stoppingToken);
+                        if (!accepted)
+                            logger.LogWarning(
+                                "Invalid signed assignment result rejected for operation {OperationId}; no success or retry was inferred.",
+                                row.Id);
                         await db.SaveChangesAsync(stoppingToken);
                     }
                     else if (row.ExpiresAtUtc < DateTime.UtcNow)
@@ -111,5 +115,71 @@ public sealed class AgentPolicyAssignmentWorker(IServiceScopeFactory scopes, IOp
             catch (Exception failure) { logger.LogWarning("Policy assignment processing unavailable ({FailureType}); no success inferred.", failure.GetType().Name); }
             try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); } catch (OperationCanceledException) { break; }
         }
+    }
+
+    internal static async Task<bool> TryApplyAssignmentResultFileAsync(
+        AgentPolicyAssignment row,
+        PolicyAssignmentRequest request,
+        string resultPath,
+        string authenticationKey,
+        DateTime utcNow,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var info = new FileInfo(resultPath);
+            if (info.Length is <= 0 or > 32_768)
+                throw new InvalidDataException("Assignment response exceeds bound.");
+            return TryApplyAssignmentResult(
+                row,
+                request,
+                await File.ReadAllTextAsync(resultPath, cancellationToken),
+                authenticationKey,
+                utcNow);
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            MarkAssignmentResultInvalid(row);
+            return false;
+        }
+    }
+
+    internal static bool TryApplyAssignmentResult(
+        AgentPolicyAssignment row,
+        PolicyAssignmentRequest request,
+        string envelope,
+        string authenticationKey,
+        DateTime utcNow)
+    {
+        try
+        {
+            var result = PolicyAssignmentProtocol.Verify<PolicyAssignmentResult>(
+                envelope,
+                authenticationKey,
+                "result");
+            PolicyAssignmentProtocol.Validate(result, request, utcNow);
+            if (row.ConfirmedAtUtc is not { } confirmedAtUtc || result.ReadAtUtc < confirmedAtUtc)
+                throw new InvalidOperationException("Assignment response binding mismatch.");
+
+            row.Status = result.Assigned ? "Assigned" : "Failed";
+            row.FailureCode = result.FailureCode;
+            row.AssignedAtUtc = result.Assigned ? result.ReadAtUtc : null;
+            row.AssignedRevision = result.Assigned ? result.DefinitionRevision : null;
+            return true;
+        }
+        catch (Exception failure) when (failure is CryptographicException or JsonException or
+            ArgumentException or FormatException or InvalidOperationException or InvalidDataException)
+        {
+            MarkAssignmentResultInvalid(row);
+            return false;
+        }
+    }
+
+    private static void MarkAssignmentResultInvalid(AgentPolicyAssignment row)
+    {
+        row.Status = "Failed";
+        row.FailureCode = ErrorCodes.ASSIGNMENT_RESULT_INVALID;
+        row.AssignedAtUtc = null;
+        row.AssignedRevision = null;
     }
 }

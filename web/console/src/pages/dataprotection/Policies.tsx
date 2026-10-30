@@ -28,7 +28,7 @@ export function Policies() {
         <Text as="h2" size={500} weight="semibold">Existing policies from Purview</Text>
         <Body1>Your policy administrator owns the rules, sensitive information types, and actions. The gateway's role is to select existing policies for agents and verify enforcement.</Body1>
         <Caption1>This is the last verified saved catalog. A compatible policy still needs an agent assignment, synchronization, and verified blocking.</Caption1>
-        {catalog.isPending ? <Spinner label="Loading policies from Purview" /> : !catalog.data ?
+        {catalog.isPending ? <Spinner label="Loading saved policies" /> : !catalog.data ?
           <ErrorState error={catalog.error} onRetry={() => catalog.refetch()} /> : <>
           {catalog.isError && <ErrorState title="The latest catalog refresh failed" error={catalog.error} onRetry={() => catalog.refetch()} />}
           <RefreshIndicator active={catalog.isFetching} label="Reloading saved catalog" />
@@ -46,7 +46,7 @@ export function Policies() {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button disabled={catalog.isFetching} icon={catalog.isFetching ? <Spinner size="tiny" /> : undefined}
             onClick={() => void catalog.refetch()}>{catalog.isFetching ? "Reloading saved catalog…" : "Reload saved catalog"}</Button>
-          <Button as="a" href="/settings/purview">Open Policy Refresh</Button>
+          <Button as="a" href="/settings/purview">Open Manual sync</Button>
         </div>
         <Body1>Choose an agent below to select a compatible policy, review its individual identity, and apply the assignment. Assignment and verified gateway enforcement are shown separately.</Body1>
         <a href="https://purview.microsoft.com/datalossprevention/policies" target="_blank" rel="noopener noreferrer">Open policies in Purview ↗</a>

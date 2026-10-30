@@ -54,7 +54,7 @@ or DLP policies. Existing-policy selection and exact per-agent assignment remain
 Console operations after tenant setup succeeds.
 
 Tenant integration setup and initial verification belong in bootstrap. Settings
-provides persisted connection diagnostics plus explicit Connect and Policy Refresh
+provides persisted connection diagnostics plus explicit Connect and Manual sync
 operations; ordinary page use never starts a provider read.
 
 There are two independent permission paths:
@@ -84,7 +84,7 @@ Application-plane upload-text blocking; compatibility alone is not assignment or
 enforcement proof.
 
 The runtime deployment uses a C# Windows connector listener. It connects with the
-dedicated certificate only for an authenticated, expiring Connect, Policy Refresh,
+dedicated certificate only for an authenticated, expiring Connect, Manual sync,
 or assignment command, validates the actual connected tenant, and returns an
 HMAC-authenticated bounded result. The API validates that result before persisting
 a snapshot. Policy GET and assignment review read the accepted database snapshot,
@@ -106,10 +106,12 @@ with tests proving child-identity and Graph/OTel token caches cannot collide.
 
 The individual-agent path now has durable `AgentPolicyAssignments` reviews and
 operations. Confirmation binds the administrator, tenant, registration protection
-revision, child identity, blueprint relationship, policy ID, and canonical provider
-revision. It immediately requests enforcement; unavailable assignment evidence
-cannot issue a prompt receipt. Additional selected policies accumulate. Scope
-removal and policy authoring remain in Purview.
+revision, child identity, blueprint relationship, policy ID, and client-submitted
+public whole-scope `revision`, stored in `ReviewedRevision`. A signed successful
+result supplies internal `definitionRevision`, stored in `AssignedRevision` as
+durable enforcement identity. It immediately requests enforcement; unavailable
+assignment evidence cannot issue a prompt receipt. Additional selected policies
+accumulate. Scope removal and policy authoring remain in Purview.
 
 The API verifies the child relationship and provisions only its two Graph runtime
 roles (`Content.Process.User` and `ProtectionScopes.Compute.User`). Assignment
@@ -120,10 +122,21 @@ checks its reviewed revision, applies only `AddInclusions` to the child applicat
 location if absent, and verifies the scope. Existing exclusions/narrow inclusions
 cause conflict. Unknown mutation outcomes do not become successful assignments.
 
-Nested SCC hashtables have nondeterministic enumeration order. Policy revisions
-canonicalize their keys (and parsed Locations/AdvancedRule JSON) before hashing.
-Real rule, mode, or scope changes still invalidate a review or runtime binding.
-A policy change requires a new review; the gateway fails closed in the meantime.
+Nested SCC hashtables have nondeterministic enumeration order. Both revision
+domains sort dictionary keys, but arrays are not generically sorted because
+unknown nested-array order may be semantic. Public `revision` preserves the exact
+deployed legacy algorithm and shape: policy identity/name, mode, enforcement
+planes, complete location scope, rules, policy/rule provider timestamps, and its
+legacy array behavior. Rules retain their established outer GUID sort.
+This value protects review/write concurrency and remains byte-compatible with
+persisted pre-upgrade values.
+
+Internal `definitionRevision` includes policy ID, mode, enforcement planes, and
+rule definition. It excludes every location/target, provider timestamp, and policy
+display name. Only known outer set-like collections such as enforcement planes and
+the rule collection receive stable sorting; unknown nested arrays retain their
+order and an order change conservatively changes the digest. A stale public
+revision requires a new review; the gateway fails closed in the meantime.
 
 Runtime uses the exact child's FMI token and application location. Scope caches
 include the child, user, and blueprint; Graph and OTel token caches are separate.
@@ -133,13 +146,17 @@ certification. Each prompt must still receive an inline Purview verdict.
 Receipts bind the agent protection revision and individual assignment evidence;
 changed evidence prevents issuance and consumption.
 
-Binding identity and catalog freshness are intentionally separate. The receipt
-hash includes the canonical durable assignment digest and excludes snapshot
-retrieval and acceptance times. An identical refresh therefore does not reject an
-in-flight receipt. A successful refresh that discovers a removed, changed,
-incompatible, or no-longer-targeted assigned policy marks that assignment
-`NeedsAttention`, advances only the affected agent's protection revision, and
-invalidates its prior evidence. Missing live runtime proof still fails closed.
+Binding identity, public whole-scope review concurrency, and catalog freshness are
+intentionally separate. The receipt hash includes the canonical durable assignment
+digest derived from `AssignedRevision` and exact all-accounts target evidence; it
+excludes snapshot times and `ReviewedRevision`. An identical refresh or addition
+of another reviewed target does not reject an existing agent's in-flight receipt
+when that agent retains one Tenant/All inclusion without exclusions and internal
+`definitionRevision` is unchanged. A successful refresh that discovers a removed
+or narrowed/excluded target, changed internal definition, or incompatibility marks
+that assignment `NeedsAttention`, advances only the affected agent's protection
+revision, and invalidates its prior evidence. Missing live runtime proof still
+fails closed.
 
 The Console shows Applying assignment, Assigned/awaiting gateway verification,
 Gateway allow and block verified, and Assignment not confirmed separately. The
@@ -158,17 +175,19 @@ to one selected policy when other policies may also apply.
 ## Manual refresh and assignment reconciliation
 
 The [implemented local design](../spec/purview-connector-vnext.md) separates the
-displayed catalog, management mutation freshness, durable assignment evidence, and
-live Graph evaluation. An aged snapshot remains visibly dated inventory but
-cannot authorize a new review or confirmation; the Console directs the operator
-to Policy Refresh. A refresh failure retains that snapshot and reports Degraded.
+cached catalog, live assignment checks, durable assignment evidence, and live
+Graph evaluation. The cache has no age expiry and remains usable for selection
+and review during sync or management unavailability. Manual sync replaces it only
+on success. A sync failure retains that snapshot and reports Degraded.
 
-When an accepted refresh changes a confirmed assignment's canonical policy
-revision, compatibility, or exact individual target, or removes the policy, the
-Gateway records `NeedsAttention` and prevents that stale assignment evidence from
-remaining current. This local behavior is covered by repository regression tests;
-live tenant propagation, allow/block, and sibling isolation remain explicitly
-gated operator validation rather than a documentation claim.
+When an accepted refresh changes a confirmed assignment's internal
+`definitionRevision`, compatibility, exact all-accounts target, or removes the
+policy, the Gateway records `NeedsAttention` and prevents stale assignment evidence
+from remaining current. A changed public `revision` caused only by an additional
+exact target is review concurrency evidence and does not invalidate existing
+assignments. This local behavior is covered by repository regression tests; live
+tenant propagation, allow/block, and sibling isolation remain explicitly gated
+operator validation rather than a documentation claim.
 
 ## Provider references
 

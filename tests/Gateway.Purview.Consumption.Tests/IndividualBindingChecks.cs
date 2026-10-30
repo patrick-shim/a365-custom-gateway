@@ -20,14 +20,15 @@ static class IndividualBindingChecks
         var agent = await db.AgentRegistrations.Include(x => x.FeatureConfiguration).SingleAsync(x => x.Id == agentId);
         if (await db.AgentPolicyAssignments.AnyAsync(x => x.AgentRegistrationId == agentId)) throw new Exception("Use an unassigned control agent for rollback-only checks.");
         var tenant = Guid.NewGuid(); var child = Guid.Parse(agent.Agent365AgentId!);
-        var policy = new PurviewExistingPolicy(Guid.NewGuid(), "Rollback-only test", "Enable", ["Application"], [child], true, new string('a',64), [child]);
+        var policy = new PurviewExistingPolicy(Guid.NewGuid(), "Rollback-only test", "Enable", ["Application"], [child], true,
+            new string('a',64), new string('b',64), [child]);
         var source = new Catalog(new(tenant, DateTimeOffset.UtcNow, [policy]));
         var bindings = new AgentPolicyBindings(db, Options.Create(new RuntimePurviewCatalogOptions { TenantId=tenant }));
         agent.PurviewPolicySelectionMode="ExistingPolicy"; agent.FeatureConfiguration.PurviewEnabled=true;
         agent.RequestedPurviewPolicyMode=PurviewPolicyMode.Enforce;
         var row = new AgentPolicyAssignment { Id=Guid.NewGuid(), TenantId=tenant, AgentRegistrationId=agentId, AgentIdentityId=child,
             BlueprintId=Guid.Parse(agent.BlueprintId!), PolicyId=policy.Id, PolicyName=policy.DisplayName, ReviewedRevision=policy.Revision,
-            AssignedRevision=policy.Revision, Status="Assigned", CreatedAtUtc=DateTime.UtcNow, ExpiresAtUtc=DateTime.UtcNow.AddMinutes(5),
+            AssignedRevision=policy.DefinitionRevision, Status="Assigned", CreatedAtUtc=DateTime.UtcNow, ExpiresAtUtc=DateTime.UtcNow.AddMinutes(5),
             ConfirmedAtUtc=DateTime.UtcNow, AssignedAtUtc=DateTime.UtcNow };
         db.AgentPolicyAssignments.Add(row); await db.SaveChangesAsync();
         var repository = new PromptEvaluationRepository(db, individualPolicies: bindings);
@@ -40,7 +41,7 @@ static class IndividualBindingChecks
             if (!await repository.IsProtectionContextCurrentAsync(context, default) || await bindings.ReadAsync(agent, default) is null)
                 throw new Exception("Display inventory mutation silently invalidated durable assignment evidence.");
         }
-        source.Value = source.Value with { Items=[policy], RetrievedAtUtc=DateTimeOffset.UtcNow.Subtract(PurviewPolicyCatalogValidation.MaximumAge).AddSeconds(-1) };
+        source.Value = source.Value with { Items=[policy], RetrievedAtUtc=DateTimeOffset.UtcNow.AddYears(-1) };
         if (await bindings.ReadAsync(agent, default) is null) throw new Exception("Aged display inventory disabled durable assignment evidence.");
         source.Value = source.Value with { RetrievedAtUtc=DateTimeOffset.UtcNow };
         row.Status="Pending"; await db.SaveChangesAsync();

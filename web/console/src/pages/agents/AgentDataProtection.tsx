@@ -14,9 +14,6 @@ import { RefreshIndicator } from "../../components/RefreshIndicator";
 import { StatusPill } from "../../components/StatusPill";
 import { purviewConnectionQueryKey, purviewPolicyCatalogQueryKey } from "../../api/queryKeys";
 
-// This mirrors the Gateway's advisory UI threshold. The API remains authoritative.
-const managementCatalogMaximumAgeMs = 30 * 24 * 60 * 60 * 1000;
-
 export function AgentDataProtection({ agent }: { agent: AgentDetail }) {
   const identity = agent.agent365?.agentId;
   const cache = useQueryClient();
@@ -72,7 +69,6 @@ export function AgentDataProtection({ agent }: { agent: AgentDetail }) {
     connection.data,
     catalog.data?.retrievedAtUtc,
     now,
-    connection.isError,
   );
   async function prepare() {
     if (!policy || !reviewReadiness.ready) return;
@@ -105,12 +101,13 @@ export function AgentDataProtection({ agent }: { agent: AgentDetail }) {
     </Card>
     <Card style={{ padding: 24, gap: 12 }}>
       <Text as="h2" size={400} weight="semibold">Policies from Purview</Text>
-      {catalog.isPending && <Spinner size="small" label="Loading policies from Purview" />}
+      {catalog.data && <Caption1>Last synced {new Date(catalog.data.retrievedAtUtc).toLocaleString()}. Saved policies stay available until the next successful manual sync.</Caption1>}
+      {catalog.isPending && <Spinner size="small" label="Loading saved policies" />}
       {catalog.isError && <ErrorState title="The current Purview catalog is unavailable" error={catalog.error} onRetry={() => catalog.refetch()} />}
       {connection.isError && <ErrorState title="Purview connection status is unavailable" error={connection.error}
         onRetry={() => connection.refetch()} />}
       <RefreshIndicator active={catalog.isFetching && !catalog.isPending} label="Reloading saved catalog" />
-      {connection.isPending && <Spinner size="tiny" label="Checking policy assignment readiness" />}
+      {connection.isPending && <Spinner size="tiny" label="Checking Purview connection" />}
       {!connection.isPending && !reviewReadiness.ready && <MessageBar intent={reviewReadiness.intent}
         role={reviewReadiness.intent === "warning" ? "alert" : "status"}>
         <MessageBarBody>
@@ -168,11 +165,13 @@ export function AgentDataProtection({ agent }: { agent: AgentDetail }) {
         {stale && !overdue && <Body1 role="alert">A recent status check is unavailable. Background progress is not confirmed.</Body1>}
         {x.status === "NeedsAttention" && <Body1 role="alert">This assignment no longer matches the current verified catalog. Refresh the catalog, review the exact policy revision and agent scope, then apply it again if it is still appropriate.</Body1>}
         {x.status === "Assigned" && x.assignedAtUtc && <Caption1>Purview assignment confirmed {new Date(x.assignedAtUtc).toLocaleString()}. Policy sync and gateway enforcement are checked separately below.</Caption1>}
-        {x.failureCode && <Caption1>{x.failureCode}. Refresh the policy catalog and review again to reconcile its current scope.</Caption1>}
+        {x.failureCode === "ASSIGNMENT_RESULT_INVALID" ? <Caption1 role="alert">
+          ASSIGNMENT_RESULT_INVALID. Inspect the Purview connector and this operation&apos;s status, then repair or redeploy the bootstrap-owned Purview Catalog Host assignment transport before refreshing the catalog or reviewing another assignment. Do not retry or resubmit this assignment until that transport is repaired.
+        </Caption1> : x.failureCode && <Caption1>{x.failureCode}. Refresh the policy catalog and review again to reconcile its current scope.</Caption1>}
       </Card>; })}
       {state?.items.length === 0 && <Body1>No policies selected in this Console. Policies scoped elsewhere in Purview may still apply.</Body1>}
       <Link to="/data-protection/policies">View all policies and agents</Link>
-      <Link to="/settings/purview">Open Policy Refresh</Link>
+      <Link to="/settings/purview">Open Manual sync</Link>
       <a href="https://purview.microsoft.com/datalossprevention/policies" target="_blank" rel="noopener noreferrer">Open policies in Purview ↗</a>
     </Card>
     <Card style={{ padding: 24, gap: 12 }}>
@@ -197,63 +196,26 @@ function getAssignmentReviewReadiness(
   connection: PurviewConnection | undefined,
   catalogRetrievedAtUtc: string | undefined,
   now: number,
-  connectionReadFailed: boolean,
 ): AssignmentReviewReadiness {
-  if (connectionReadFailed) return {
-    ready: false,
-    intent: "warning",
-    title: "Policy assignment readiness could not be confirmed",
-    detail: "Check the Purview connection again before reviewing a new assignment.",
-  };
-  if (!connection) return {
-    ready: false,
-    intent: "info",
-    title: "Checking policy assignment readiness",
-    detail: "The Console is confirming the current Purview connection and saved catalog.",
-  };
-  if (connection.state === "Connecting" || connection.state === "Refreshing") return {
-    ready: false,
-    intent: "info",
-    title: connection.state === "Refreshing" ? "Policy refresh is running" : "Purview connection is being verified",
-    detail: "The previous saved catalog is view-only until the Gateway accepts a fresh verified snapshot.",
-  };
-  if (connection.state === "Degraded") return {
-    ready: false,
-    intent: "warning",
-    title: "Policy management needs attention",
-    detail: "The previous saved catalog remains visible for reference. Retry Policy Refresh before reviewing a new assignment.",
-  };
-  if (connection.state === "Disconnected" || connection.state === "NotConfigured") return {
-    ready: false,
-    intent: "warning",
-    title: "Purview policy management is not connected",
-    detail: "Open Policy Refresh to connect or repair the management connector before reviewing a new assignment.",
-  };
-  if (connection.catalogVerificationStatus !== "Verified" || !connection.catalogRetrievedAtUtc || !catalogRetrievedAtUtc) return {
+  if (!catalogRetrievedAtUtc) return {
     ready: false,
     intent: "warning",
     title: "No verified policy catalog is ready",
-    detail: "Run Policy Refresh and wait for a verified snapshot before reviewing a new assignment.",
+    detail: "Run Manual sync to retrieve the first saved policy list.",
   };
-  const acceptedAt = Date.parse(connection.catalogRetrievedAtUtc);
+  const acceptedAt = connection?.catalogRetrievedAtUtc ? Date.parse(connection.catalogRetrievedAtUtc) : null;
   const retrievedAt = Date.parse(catalogRetrievedAtUtc);
-  if (!Number.isFinite(acceptedAt) || !Number.isFinite(retrievedAt) || retrievedAt > now + 60_000) return {
+  if (!Number.isFinite(retrievedAt) || retrievedAt > now + 60_000) return {
     ready: false,
     intent: "warning",
     title: "The verified policy catalog could not be confirmed",
     detail: "Reload the saved catalog before reviewing a new assignment.",
   };
-  if (acceptedAt > retrievedAt) return {
+  if (acceptedAt !== null && acceptedAt > retrievedAt) return {
     ready: false,
     intent: "info",
     title: "Loading the latest verified policy catalog",
     detail: "A newer Purview snapshot was accepted. Review will be available after this page loads that exact revision.",
-  };
-  if (now - retrievedAt > managementCatalogMaximumAgeMs) return {
-    ready: false,
-    intent: "warning",
-    title: "The saved policy catalog is view-only",
-    detail: "It is outside the 30-day management freshness window. Run Policy Refresh before reviewing a new assignment.",
   };
   return { ready: true, intent: "info", title: "Policy assignment is ready", detail: "" };
 }

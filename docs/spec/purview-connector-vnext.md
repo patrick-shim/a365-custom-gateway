@@ -1,4 +1,4 @@
-# Manual Purview Policy Refresh — Local Implementation Record
+# Manual Purview Manual sync — Local Implementation Record
 
 **Status:** local Windows implementation complete; Purview regression suites
 passed; broader repository, live tenant, and restart acceptance not yet claimed
@@ -15,7 +15,7 @@ on hold until the operator explicitly releases it
 Gateway administrators explicitly connect to Purview and request policy-catalog
 refreshes from the Console. Initial bootstrap may retrieve and publish one verified
 catalog. After setup, a full provider catalog read occurs only for an accepted
-**Connect to Purview**, **Policy Refresh**, **Retry Policy Refresh**, or
+**Connect to Purview**, **Manual sync**, **Retry manual sync**, or
 **Reconnect** operation.
 
 Page load, browser focus, status polling, policy GET, listener heartbeat, elapsed
@@ -32,6 +32,20 @@ Gateway runtime and connector.
 Runtime `processContent` evaluation is separate from catalog management. An aged
 display catalog does not by itself stop an agent with a valid confirmed assignment
 and required live runtime evidence. Required runtime protection still fails closed.
+
+This current-release baseline distinguishes the signed catalog's internal
+`definitionRevision` from its public whole-scope `revision`. Public `revision`
+preserves the exact deployed legacy digest, including policy/rule provider
+timestamps and legacy array behavior, and is submitted by the client for
+stale-review/write protection. Internal `definitionRevision` excludes all
+locations/targets, provider timestamps, and policy display name. It sorts only
+known outer set-like collections and preserves unknown nested-array order. Adding
+another individually reviewed identity changes public `revision`, but it does not
+invalidate existing assignments whose internal definition revision is unchanged
+and whose exact all-accounts targets remain. A pre-upgrade assigned legacy digest
+is rebased only on exact current-public-revision, target, and compatibility
+evidence. This clarification fixes current reconciliation behavior; it does not
+activate the held server/cloud milestone.
 
 ## 2. Runtime architecture
 
@@ -64,6 +78,11 @@ The provider child is bounded to six minutes. Connect and refresh operations hav
 a ten-minute deadline. Safe retry and crash recovery keep the original operation
 identity and deadline; they do not create a schedule.
 
+An authenticated, correctly bound result completed after that deadline is
+`TimedOut`, including cancellation finishing just after expiry. Its digest is
+retained, the prior catalog is preserved, and invalid authentication or operation
+binding remains a separate failure.
+
 ## 3. Source of truth and migration
 
 PostgreSQL is authoritative after migration:
@@ -80,8 +99,9 @@ is `AcceptedPurviewConnectorSnapshot`.
 
 The former signed-file catalog is not the current runtime authority. It is accepted
 only as a one-time migration source when connector state is empty. The X.509
-signature, tenant, schema, completeness, uniqueness, freshness for management, and
-canonical policy revisions are verified before import.
+signature, tenant, schema, completeness, uniqueness, freshness for management,
+public whole-scope `revision`, and internal `definitionRevision` are verified
+before import.
 
 During a clean or migrated bootstrap, the catalog already read and verified by
 bootstrap is handed to the listener publication path. Bootstrap does not perform a
@@ -98,17 +118,17 @@ operation, Linux, containers, and cloud-managed workers belong to held M6.
 | --- | --- |
 | Bootstrap publication | Accept the one bootstrap-verified catalog through the authenticated result path; no second provider read. |
 | Connect/Reconnect | Create one durable VerifyConnection operation and retrieve one complete catalog. |
-| Policy Refresh/Retry | Create one durable RefreshCatalog operation and retrieve one complete catalog. |
+| Manual sync/Retry | Create one durable RefreshCatalog operation and retrieve one complete catalog. |
 | Page load, browser focus, GET polling | Read PostgreSQL only. |
 | Policy catalog GET | Return the latest accepted PostgreSQL snapshot only. |
 | Idle listener or heartbeat | Check local work and report liveness only. |
 | API, Docker, or listener restart | Restore local state and recover an accepted operation if eligible; do not create a refresh. |
-| Assignment review/confirm | Require the accepted catalog to be within the thirty-day management freshness window and bind its exact revision and individual identity. |
+| Assignment review/confirm | Use the accepted cache without age expiry; bind its exact revision and individual identity, then verify the selected policy live on execution. |
 | Assignment execution | Read the selected policy live, preserve unrelated scope, apply only the reviewed individual target, and read back the result. |
 | Prompt/response evaluation | Use the runtime Graph protection path; never invoke management PowerShell or an implicit catalog refresh. |
 
 A policy added after the last successful inventory read appears only after the
-administrator requests Policy Refresh.
+administrator requests Manual sync.
 
 Connector submissions and dispatcher transitions share one tenant serialization
 boundary. A transient PostgreSQL serialization or deadlock conflict before commit
@@ -126,7 +146,7 @@ The implemented Administrator-only routes are:
 | --- | --- |
 | `GET /api/v1/protection/purview/connection` | Return persisted connection, heartbeat, catalog, operation, failure, and row-version state. It performs no provider read. |
 | `POST /api/v1/protection/purview/connection` | Accept a Connect operation. Body: `{"confirmConnection":true}`. |
-| `POST /api/v1/protection/purview/connection/refresh` | Accept a Policy Refresh operation. Body: `{}`. |
+| `POST /api/v1/protection/purview/connection/refresh` | Accept a Manual sync operation. Body: `{}`. |
 | `GET /api/v1/operations/{operationId}` | Return durable operation progress and terminal outcome. |
 
 Mutations require a canonical lowercase UUIDv4 `Idempotency-Key` and the current
@@ -165,9 +185,9 @@ Settings / Purview exposes the connection card and the state-appropriate action:
 | --- | --- |
 | `NotConfigured` | **Connect to Purview** |
 | `Connecting` | Disabled progress action |
-| `Connected` | **Policy Refresh** |
+| `Connected` | **Manual sync** |
 | `Refreshing` | Disabled progress action; keep the previous accepted catalog visible |
-| `Degraded` | **Retry Policy Refresh** |
+| `Degraded` | **Retry manual sync** |
 | `Disconnected` | **Reconnect** |
 
 The card distinguishes listener heartbeat, last attempted refresh, last successful
@@ -189,18 +209,22 @@ A failed or timed-out refresh never becomes an empty success. The previous accep
 catalog remains available and visibly dated. The connection becomes `Degraded`
 when an accepted snapshot exists and `Disconnected` when none exists.
 
-Catalog age is a management-mutation gate, not a runtime expiration. Review and
-confirmation require an accepted snapshot no older than thirty days. A durable
-confirmed binding remains runtime evidence independently of later display-catalog
-age, while live Graph scope and inline verdict requirements continue to fail closed.
-This reuse limit is separate from connector-result validation: a successful
+The accepted catalog has no age expiry and stays usable for selection and review
+through sync failures or management unavailability. **Manual sync** replaces it
+only after a successful read. Selected-policy live revision and target checks
+still guard assignment writes; Graph scope and inline verdicts remain fail closed.
+Persistent reuse is separate from connector-result validation: a successful
 provider operation still requires catalog evidence retrieved within fifteen
 minutes of that operation's completion.
 
-After each accepted refresh, the Gateway reconciles current confirmed assignments.
-An assignment becomes `NeedsAttention` if its policy was removed, its revision
-changed, its individual target disappeared, or the policy became incompatible.
-The affected agent's protection revision changes so stale receipts cannot be used.
+After each accepted refresh, the Gateway reconciles current confirmed assignments
+against internal `definitionRevision` and exact all-accounts target evidence.
+Public whole-scope `revision` is retained for review/write concurrency and may
+change when another target is added without invalidating an existing binding. An
+assignment becomes `NeedsAttention` if its policy was removed, its individual
+target disappeared or no longer has exactly Tenant/All with no exclusions, its
+material rule/mode/definition changed, or the policy became incompatible. Only the
+affected agent's protection revision changes so stale receipts cannot be used.
 
 Listener readiness is derived from persisted authenticated heartbeat evidence.
 The five-second heartbeat interval has a thirty-second stale boundary. Crossing it

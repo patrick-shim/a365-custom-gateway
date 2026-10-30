@@ -101,6 +101,8 @@ public static class PurviewConnectorProtocol
             throw new CryptographicException("Connector envelope exceeds its size bound.");
         var value = JsonSerializer.Deserialize<AuthenticatedConnectorMessage>(envelope, Json)
             ?? throw new JsonException("Missing connector envelope.");
+        if (string.IsNullOrWhiteSpace(value.Payload) || string.IsNullOrWhiteSpace(value.Mac))
+            throw new CryptographicException("Connector envelope authentication evidence is missing.");
         byte[] suppliedMac;
         byte[] payload;
         try

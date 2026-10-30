@@ -2,6 +2,12 @@
 
 The React/Fluent UI Console uses a navy navigation rail, compact headers, layered cards, consistent tables and agent-detail tabs. Fluent theme overrides live in `web/console/src/theme.ts`; shell and surface styles live in `base.css`.
 
+The container serves the SPA and same-origin API routes through Nginx. That proxy
+re-resolves the Compose `api` service through Docker DNS while Nginx is running,
+so API container recreation does not strand the Console on a retired container
+address or require a Console restart. Existing paths, query strings,
+authorization forwarding, API-reference routes, and health routes are preserved.
+
 ## Navigation and workflows
 
 - Agents: server-side search and pagination, registration, authoritative setup progress, detail tabs and lifecycle actions.
@@ -40,12 +46,12 @@ Policy assignment distinguishes applying, assigned/awaiting verification, curren
 
 API keys are visible once and are not retained in query caches. Role-aware controls supplement server authorization. Search cursors and operation identifiers come from the server. Failed or uncertain mutations must not display fabricated success.
 
-## Purview connection and Policy Refresh
+## Purview connection and Manual sync
 
 The Settings / Purview page reads the local connection record and exposes
 the six server states: `NotConfigured`, `Connecting`, `Connected`, `Refreshing`,
 `Degraded`, and `Disconnected`. It maps them to **Connect to Purview**, in-progress
-feedback, **Policy Refresh**, **Retry Policy Refresh**, or **Reconnect**. Connect
+feedback, **Manual sync**, **Retry manual sync**, or **Reconnect**. Connect
 requires an explicit confirmation and uses only the identity, certificate,
 permissions, and listener installed by bootstrap.
 
@@ -60,7 +66,7 @@ The server reports `Degraded` while retaining an accepted catalog, or
 `Disconnected` when none exists. Heartbeat recovery restores only this
 liveness-induced state and does not retrieve policy content.
 
-Connect and Policy Refresh return an accepted durable operation. The Console does
+Connect and Manual sync return an accepted durable operation. The Console does
 not call that completion. It polls the same operation about every three seconds,
 replaces the existing progress state, and stops for `Succeeded`, `Failed`,
 `NeedsAttention`, `TimedOut`, or `Cancelled`, or when operation status cannot be
@@ -79,16 +85,15 @@ without claiming that a refresh started.
 A failed refresh preserves the previous verified catalog and labels the connection
 Degraded; the UI explains that management failure alone does not prove configured
 agents lost runtime protection. Policy and agent pages reload the saved accepted
-catalog and link to Policy Refresh rather than implying that local reload contacts
+catalog and link to Manual sync rather than implying that local reload contacts
 Purview. Catalog age alone does not label a durable assignment unavailable.
 
-The prior accepted catalog is view-only while the connection is `Connecting`,
-`Refreshing`, `Degraded`, or `Disconnected`, or while its retrieval timestamp is
-outside the thirty-day management freshness limit. Agent assignment selection
-and review are disabled with plain-language guidance in those states. When an open
-agent page observes a newer accepted catalog revision, it replaces the saved view,
-clears an obsolete stale-inventory review error, and enables review only if the new
-snapshot is verified, connected, and fresh.
+The **Manual sync** button retrieves the policy list on demand. The prior accepted
+catalog has no age expiry and remains usable for selection and review while sync
+is running or the management connector is unavailable. A failed sync retains the
+list and its last sync time. A successful sync replaces it. When an open agent
+page observes a newer accepted revision, it loads that version before the next
+review. Applying an assignment still verifies the selected policy live.
 
 Thirty seconds without an authenticated listener heartbeat is a local management-
 readiness failure. The page shows `Degraded` and retains the dated accepted catalog
@@ -96,10 +101,15 @@ when one exists, or `Disconnected` when none exists, with
 `PURVIEW_CONNECTOR_UNAVAILABLE` repair guidance. A later authenticated heartbeat
 restores only this liveness-induced state and does not start a policy refresh.
 
-Assignment status includes `NeedsAttention`. A refresh-proven removed, revised,
-incompatible, or no-longer-targeted policy is shown as requiring review and cannot
-be presented as a current binding. Assignment completion and runtime allow/block
-evidence remain separate.
+Assignment status includes `NeedsAttention`. The page derives it from the signed
+internal `definitionRevision` and this agent's exact all-accounts target evidence,
+not from a change to public whole-scope `revision` alone. Adding a separately
+reviewed agent to the same policy leaves existing agents assigned without warning
+when their exact targets and enforcement semantics remain unchanged. A refresh-
+proven removal, narrowing/exclusion, material rule/mode/definition change,
+incompatibility, or no-longer-targeted identity is shown as requiring review and
+cannot be presented as a current binding. Assignment completion and runtime
+allow/block evidence remain separate.
 
 ## Theme, motion and accessibility
 

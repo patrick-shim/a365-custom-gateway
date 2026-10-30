@@ -10,7 +10,7 @@ targets and exclusions. Never silently broaden an agent choice to its blueprint.
 
 Console structure: Data protection → Policies; each agent has a Data protection
 tab; Settings contains Gateway settings and the persisted Purview connection,
-Connect, and Policy Refresh experience. Tenant provisioning and management-
+Connect, and Manual sync experience. Tenant provisioning and management-
 credential verification belong in bootstrap. Management
 PowerShell access and runtime Graph processContent permissions are separate.
 The gateway exposes prompts:evaluate and calls Purview; Purview does not call a
@@ -137,7 +137,7 @@ The React installer and terminal share one configuration and execution engine.
 Known interrupted checkpoints are reconciled through exact ownership readback;
 Prompt Shields and Purview remain
 independently selectable. Initial connection settings and product provisioning
-belong in bootstrap; local connector verification, Policy Refresh, and existing-
+belong in bootstrap; local connector verification, Manual sync, and existing-
 policy selection belong in the Console. Page/GET access and idle or restart
 recovery do not create a new provider operation; recovery may resume an already
 accepted, unexpired operation.

@@ -554,7 +554,6 @@ internal sealed class PurviewConnectorDispatcher(
         }
 
         PurviewPolicyCatalogValidation.Validate(catalog, _options.TenantId);
-        PurviewPolicyCatalogValidation.EnsureFreshForManagement(catalog);
         var catalogHash = PurviewConnectorProtocol.Digest(catalog);
         var operationId = Guid.NewGuid();
         var counts = CountPolicies(catalog);
@@ -636,29 +635,16 @@ internal sealed class PurviewConnectorDispatcher(
                 await File.ReadAllTextAsync(resultPath, cancellationToken),
                 _options.AuthenticationKey,
                 PurviewConnectorProtocol.ResultDomain);
-            var command = CreateCommand(operation);
-            // Validate the immutable command at its issue time; result acceptance
-            // separately enforces the operation deadline below.
-            PurviewConnectorProtocol.ValidateCommand(
-                command, _options.TenantId, _options.ConnectorInstanceId, command.IssuedAtUtc);
-            PurviewConnectorProtocol.ValidateResult(
-                result, command, _options.TenantId, _options.ConnectorInstanceId, now);
-            if (result.CompletedAtUtc > operation.ExpiresAtUtc)
-                throw new InvalidOperationException("Connector result completed after the operation deadline.");
+            var status = ValidateResultStatus(
+                result, operation, _options.TenantId, _options.ConnectorInstanceId, now);
 
             operation.ResultHash = PurviewConnectorProtocol.Digest(result);
-            if (result.Status == "Succeeded")
+            if (status == PurviewConnectorOperationStatus.Succeeded)
             {
                 await AcceptCatalogAsync(db, state, operation, result.Catalog!, result.CatalogHash!, now, cancellationToken);
                 return;
             }
 
-            var status = result.Status switch
-            {
-                "NeedsAttention" => PurviewConnectorOperationStatus.NeedsAttention,
-                "TimedOut" => PurviewConnectorOperationStatus.TimedOut,
-                _ => PurviewConnectorOperationStatus.Failed
-            };
             var failureCode = status == PurviewConnectorOperationStatus.TimedOut
                 ? ErrorCodes.PURVIEW_CONNECTOR_TIMED_OUT
                 : result.FailureCode!;
@@ -675,6 +661,33 @@ internal sealed class PurviewConnectorDispatcher(
                 db, state, operation, PurviewConnectorOperationStatus.NeedsAttention,
                 ErrorCodes.PURVIEW_CONNECTOR_RESULT_INVALID, now, cancellationToken);
         }
+    }
+
+    internal static PurviewConnectorOperationStatus ValidateResultStatus(
+        PurviewConnectorResult result,
+        PurviewConnectorOperation operation,
+        Guid tenantId,
+        Guid connectorInstanceId,
+        DateTime utcNow)
+    {
+        var command = CreateCommand(operation);
+        PurviewConnectorProtocol.ValidateCommand(
+            command, tenantId, connectorInstanceId, command.IssuedAtUtc);
+        PurviewConnectorProtocol.ValidateResult(
+            result, command, tenantId, connectorInstanceId, utcNow);
+
+        // Killing a provider child can finish just after expiry. Correctly bound
+        // late evidence is a timeout, never catalog acceptance or an auth failure.
+        if (result.CompletedAtUtc > operation.ExpiresAtUtc)
+            return PurviewConnectorOperationStatus.TimedOut;
+
+        return result.Status switch
+        {
+            "Succeeded" => PurviewConnectorOperationStatus.Succeeded,
+            "NeedsAttention" => PurviewConnectorOperationStatus.NeedsAttention,
+            "TimedOut" => PurviewConnectorOperationStatus.TimedOut,
+            _ => PurviewConnectorOperationStatus.Failed
+        };
     }
 
     private async Task AcceptCatalogAsync(
@@ -743,16 +756,17 @@ internal sealed class PurviewConnectorDispatcher(
         DateTime now,
         CancellationToken cancellationToken)
     {
-        var assigned = await db.AgentPolicyAssignments
+        var confirmed = await db.AgentPolicyAssignments
             .Where(row => row.TenantId == operation.TenantId &&
-                row.ConfirmedAtUtc != null && row.Status == "Assigned")
+                row.ConfirmedAtUtc != null)
             .OrderBy(row => row.AgentRegistrationId)
             .ThenBy(row => row.PolicyId)
             .ThenByDescending(row => row.ConfirmedAtUtc)
             .ToListAsync(cancellationToken);
-        var current = assigned
+        var current = confirmed
             .GroupBy(row => new { row.AgentRegistrationId, row.PolicyId })
             .Select(group => group.First())
+            .Where(row => row.Status == "Assigned")
             .ToArray();
         if (current.Length == 0)
             return;
@@ -761,6 +775,11 @@ internal sealed class PurviewConnectorDispatcher(
         var affectedAgents = new Dictionary<Guid, string>();
         foreach (var row in current)
         {
+            if (CanRebaseLegacyAssignedRevision(row, policies))
+            {
+                row.AssignedRevision = policies[row.PolicyId].DefinitionRevision;
+                continue;
+            }
             var failureCode = AssignmentFailure(row, policies);
             if (failureCode is null)
                 continue;
@@ -801,15 +820,25 @@ internal sealed class PurviewConnectorDispatcher(
     {
         if (!policies.TryGetValue(assignment.PolicyId, out var policy))
             return "ASSIGNMENT_POLICY_REMOVED";
-        if (!string.Equals(assignment.AssignedRevision, policy.Revision, StringComparison.Ordinal))
-            return "ASSIGNMENT_POLICY_REVISION_CHANGED";
         if (policy.AllAccountsApplicationIds is null ||
             !policy.AllAccountsApplicationIds.Contains(assignment.AgentIdentityId))
             return "ASSIGNMENT_POLICY_SCOPE_CHANGED";
-        return PurviewPolicyCatalogValidation.Incompatibility(policy) is null
-            ? null
-            : "ASSIGNMENT_POLICY_INCOMPATIBLE";
+        if (PurviewPolicyCatalogValidation.Incompatibility(policy) is not null)
+            return "ASSIGNMENT_POLICY_INCOMPATIBLE";
+        if (!string.Equals(assignment.AssignedRevision, policy.DefinitionRevision, StringComparison.Ordinal))
+            return "ASSIGNMENT_POLICY_REVISION_CHANGED";
+        return null;
     }
+
+    internal static bool CanRebaseLegacyAssignedRevision(
+        AgentPolicyAssignment assignment,
+        IReadOnlyDictionary<Guid, PurviewExistingPolicy> policies) =>
+        assignment.Status == "Assigned" &&
+        policies.TryGetValue(assignment.PolicyId, out var policy) &&
+        string.Equals(assignment.AssignedRevision, policy.Revision, StringComparison.Ordinal) &&
+        policy.AllAccountsApplicationIds is not null &&
+        policy.AllAccountsApplicationIds.Contains(assignment.AgentIdentityId) &&
+        PurviewPolicyCatalogValidation.Incompatibility(policy) is null;
 
     internal static bool RequiresCommandPublication(
         PurviewConnectorOperation operation,
@@ -830,6 +859,27 @@ internal sealed class PurviewConnectorDispatcher(
     {
         var hasAcceptedCatalog = await db.PurviewCatalogSnapshots
             .AnyAsync(snapshot => snapshot.TenantId == operation.TenantId, cancellationToken);
+        ApplyFailureState(state, operation, status, failureCode, now, hasAcceptedCatalog);
+        db.AuditEvents.Add(new AuditEvent
+        {
+            Id = Guid.NewGuid(),
+            EventType = "PurviewConnectorOperationFailed",
+            PerformedByObjectId = operation.RequestedByObjectId,
+            PerformedByRole = "GatewayAdministrator",
+            Details = $"OperationId={operation.Id:D}; ConnectorInstanceId={operation.ConnectorInstanceId:D}; FailureCode={failureCode}",
+            CorrelationId = operation.CorrelationId,
+            OccurredAtUtc = now
+        });
+    }
+
+    internal static void ApplyFailureState(
+        PurviewConnectorStateRecord state,
+        PurviewConnectorOperation operation,
+        PurviewConnectorOperationStatus status,
+        string failureCode,
+        DateTime now,
+        bool hasAcceptedCatalog)
+    {
         operation.Status = status;
         operation.CurrentStep = status == PurviewConnectorOperationStatus.TimedOut
             ? "TimedOut"
@@ -849,16 +899,6 @@ internal sealed class PurviewConnectorDispatcher(
         state.LastCorrelationId = operation.CorrelationId;
         state.UpdatedAtUtc = now;
         state.RowVersion = NewRowVersion();
-        db.AuditEvents.Add(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            EventType = "PurviewConnectorOperationFailed",
-            PerformedByObjectId = operation.RequestedByObjectId,
-            PerformedByRole = "GatewayAdministrator",
-            Details = $"OperationId={operation.Id:D}; ConnectorInstanceId={operation.ConnectorInstanceId:D}; FailureCode={failureCode}",
-            CorrelationId = operation.CorrelationId,
-            OccurredAtUtc = now
-        });
     }
 
     private async Task EnsureCommandPublishedAsync(
